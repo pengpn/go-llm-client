@@ -49,7 +49,12 @@ func New(opts ...Option) *Client {
 // Chat 发送对话请求，返回完整响应。
 // 自动处理重试逻辑，对 429/5xx 做指数退避。
 func (c *Client) Chat(ctx context.Context, messages []models.Message) (*models.Response, error) {
-	// 获取并发令牌（如果已达上限则阻塞等待）
+	return c.ChatWithTools(ctx, messages, nil)
+}
+
+// ChatWithTools 发送携带工具定义的对话请求。
+// tools 不为空时，LLM 可能返回 FinishReason="tool_calls"，需要执行工具后继续循环。
+func (c *Client) ChatWithTools(ctx context.Context, messages []models.Message, tools []models.ToolDefinition) (*models.Response, error) {
 	if err := c.acquire(ctx); err != nil {
 		return nil, fmt.Errorf("获取并发令牌失败: %w", err)
 	}
@@ -58,6 +63,7 @@ func (c *Client) Chat(ctx context.Context, messages []models.Message) (*models.R
 	req := models.ChatRequest{
 		Model:       c.opts.model,
 		Messages:    messages,
+		Tools:       tools,
 		Temperature: c.opts.temperature,
 		MaxTokens:   c.opts.maxTokens,
 	}
@@ -142,9 +148,11 @@ func (c *Client) doRequest(ctx context.Context, req models.ChatRequest) (*models
 		return nil, fmt.Errorf("API 返回空 choices")
 	}
 
+	choice := chatResp.Choices[0]
 	return &models.Response{
-		Content:      chatResp.Choices[0].Message.Content,
-		FinishReason: chatResp.Choices[0].FinishReason,
+		Content:      choice.Message.Content,
+		FinishReason: choice.FinishReason,
+		ToolCalls:    choice.Message.ToolCalls,
 		Usage:        chatResp.Usage,
 		Model:        chatResp.Model,
 	}, nil
