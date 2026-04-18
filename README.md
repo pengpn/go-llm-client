@@ -354,6 +354,6 @@ registry.Register(agent.NewTool(
 
 Lesson 3 完成后，建议你继续做这三个练习：
 
-1. 为 `agent.Agent` 补充测试，覆盖工具成功、工具失败、超最大步数这三类核心路径
-2. 给工具输入增加参数校验，思考“模型传错 JSON”时应该由谁兜底
-3. 尝试再加一个工具，例如“取消订单”或“修改收货地址”，体会读操作和写操作的差异
+  1. 并行工具调用：当 LLM 在一次响应中请求多个工具时（len(ToolCalls) > 1），改为并发执行（用 goroutine + WaitGroup），而不是顺序执行
+  2. 工具调用历史持久化：扩展 session.Session，让它能保存含 ToolCalls 的 assistant 消息（当前 AddAssistantMessage 只存文本）
+  3. 测试：给 agent.Run 写单元测试，用 mock Client 模拟 LLM 的响应，验证工具调用→执行→回传的完整循环
