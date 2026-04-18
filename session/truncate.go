@@ -1,21 +1,71 @@
 // Package session 管理多轮对话的消息历史。
 package session
 
-import "github.com/pengpn/go-llm-agent/models"
+import (
+	"github.com/pengpn/go-llm-agent/models"
+	"github.com/tiktoken-go/tokenizer"
+)
 
 // TruncateStrategy 定义截断策略的接口。
-// 设计为接口而不是固定实现，方便将来接入精确的 tiktoken 计算。
 type TruncateStrategy interface {
-	// Truncate 接收完整的消息列表，返回截断后的列表。
-	// systemPrompt 永远不被截断，始终保留在第一位。
 	Truncate(messages []models.Message) []models.Message
 }
 
+// TokenCounter 是 Token 计数的抽象接口。
+// 用接口隔离 tiktoken 依赖，方便测试时注入 mock，或切换到其他计数方案。
+type TokenCounter interface {
+	Count(text string) int
+}
+
+// ---- TokenCounter 实现 ----
+
+// TikTokenCounter 使用 tiktoken 精确计算 Token 数。
+// 支持 GPT-4、GPT-3.5-Turbo、GPT-4o 等使用 cl100k_base 编码的模型。
+type TikTokenCounter struct {
+	codec tokenizer.Codec
+}
+
+// NewTikTokenCounter 创建基于 tiktoken 的计数器。
+// model 传入 OpenAI 模型名，如 "gpt-4o-mini"、"gpt-4"、"gpt-3.5-turbo"。
+// 模型不受支持时，退化为估算计数器并不报错（降级处理）。
+func NewTikTokenCounter(model string) TokenCounter {
+	enc, err := tokenizer.ForModel(tokenizer.Model(model))
+	if err != nil {
+		// 模型不在支持列表（如智谱、通义），降级到估算
+		return &EstimateCounter{}
+	}
+	return &TikTokenCounter{codec: enc}
+}
+
+// Count 精确计算文本的 Token 数。tiktoken 返回 error 时降级为估算。
+func (t *TikTokenCounter) Count(text string) int {
+	n, err := t.codec.Count(text)
+	if err != nil {
+		return estimateByRune(text) // 降级
+	}
+	return n
+}
+
+// EstimateCounter 用字符数估算 Token 数，作为 tiktoken 不可用时的降级方案。
+// 规则：英文约 4 字符/Token；中文约 1 字符/Token（保守估算）。
+type EstimateCounter struct{}
+
+func (e *EstimateCounter) Count(text string) int {
+	return estimateByRune(text)
+}
+
+// estimateByRune 按 Unicode 字符数估算 Token 数。
+func estimateByRune(text string) int {
+	return len([]rune(text))
+}
+
+// ---- 截断策略 ----
+
 // ByTurns 按对话轮数截断。
-// 最简单的策略：超过 N 轮就删掉最旧的。
-// 适合对精确 Token 数不敏感的场景。
+// 超过 MaxTurns 轮时，删除最旧的轮次，保留最新的。
+// 一轮 = user + assistant 共 2 条消息。
 type ByTurns struct {
-	MaxTurns int // 保留最近 N 轮（一轮 = user + assistant 共 2 条消息）
+	MaxTurns int
 }
 
 // Truncate 保留 system prompt + 最近 MaxTurns 轮对话。
@@ -24,68 +74,114 @@ func (b *ByTurns) Truncate(messages []models.Message) []models.Message {
 		return messages
 	}
 
-	// 分离 system prompt 和对话历史
 	systemMsgs, historyMsgs := splitSystem(messages)
 
 	maxHistory := b.MaxTurns * 2 // 每轮 2 条消息
 	if len(historyMsgs) <= maxHistory {
-		return messages // 未超限，无需截断
+		return messages
 	}
 
-	// 保留最新的 maxHistory 条，丢弃最旧的
 	truncated := historyMsgs[len(historyMsgs)-maxHistory:]
-
-	// 拼回：system + 截断后的历史
-	return append(systemMsgs, truncated...)
+	result := make([]models.Message, 0, len(systemMsgs)+len(truncated))
+	result = append(result, systemMsgs...)
+	result = append(result, truncated...)
+	return result
 }
 
-// ByTokenEstimate 按 Token 数估算截断。
-// 精确的 Token 计数需要 tiktoken，这里用字符数 / 3 估算（适用于英文）。
-// 中文每个字约 1-2 个 Token，这里保守估算为 1 字 = 1 Token。
-//
-// 为什么不直接用 tiktoken？
-// 因为 tiktoken 的 Go 移植库依赖较重，教学阶段先用估算，后续可替换。
-type ByTokenEstimate struct {
-	MaxTokens int // 保留的最大 Token 数（估算）
+// ByTokenCount 按精确 Token 数截断（使用 tiktoken 或估算降级）。
+// 相比 ByTurns，更精确地控制发送给 LLM 的上下文大小。
+type ByTokenCount struct {
+	MaxTokens int
+	counter   TokenCounter
 }
 
-// Truncate 估算 Token 数并截断超出部分。
-func (b *ByTokenEstimate) Truncate(messages []models.Message) []models.Message {
+// NewByTokenCount 创建按 Token 截断的策略。
+// model 用于选择正确的 tiktoken 编码，空字符串时使用估算。
+func NewByTokenCount(maxTokens int, model string) *ByTokenCount {
+	var counter TokenCounter
+	if model != "" {
+		counter = NewTikTokenCounter(model)
+	} else {
+		counter = &EstimateCounter{}
+	}
+	return &ByTokenCount{
+		MaxTokens: maxTokens,
+		counter:   counter,
+	}
+}
+
+// Truncate 计算 Token 数并截断超出部分。
+// OpenAI 的消息格式每条有固定开销，参考：
+// https://platform.openai.com/docs/guides/text-generation/managing-tokens
+func (b *ByTokenCount) Truncate(messages []models.Message) []models.Message {
 	if len(messages) == 0 {
 		return messages
 	}
 
 	systemMsgs, historyMsgs := splitSystem(messages)
 
-	// 计算 system prompt 占用的 Token（不可截断）
-	systemTokens := estimateTokens(systemMsgs)
+	systemTokens := b.countMessages(systemMsgs)
 	budget := b.MaxTokens - systemTokens
 	if budget <= 0 {
-		// system prompt 本身超出限制，只保留 system（极端情况）
 		return systemMsgs
 	}
 
-	// 从最新消息往旧消息方向累计，直到超出 budget
+	// 从最新消息往旧的方向累计，直到超出 budget
 	var kept []models.Message
-	usedTokens := 0
+	used := 0
 
 	for i := len(historyMsgs) - 1; i >= 0; i-- {
-		t := estimateTokens([]models.Message{historyMsgs[i]})
-		if usedTokens+t > budget {
+		t := b.countMessages([]models.Message{historyMsgs[i]})
+		if used+t > budget {
 			break
 		}
-		usedTokens += t
-		// 注意：这里是逆序追加，最后需要 reverse
+		used += t
 		kept = append(kept, historyMsgs[i])
 	}
 
-	// 反转恢复时间顺序
 	reverseMessages(kept)
 
-	return append(systemMsgs, kept...)
+	result := make([]models.Message, 0, len(systemMsgs)+len(kept))
+	result = append(result, systemMsgs...)
+	result = append(result, kept...)
+	return result
 }
 
-// splitSystem 将消息列表拆分为 system 消息和非 system 消息。
+// countMessages 计算消息列表的总 Token 数，含每条消息的固定开销。
+// OpenAI 每条消息固定消耗 4 个 token（格式化标记），回复再加 3 个。
+func (b *ByTokenCount) countMessages(messages []models.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += 4 // 每条消息的固定格式开销
+		total += b.counter.Count(m.Content)
+	}
+	return total
+}
+
+// ByTokenEstimate 保持向后兼容，内部使用估算计数器。
+// 新代码推荐使用 NewByTokenCount。
+type ByTokenEstimate struct {
+	MaxTokens int
+	inner     *ByTokenCount
+}
+
+func (b *ByTokenEstimate) strategy() *ByTokenCount {
+	if b.inner == nil {
+		b.inner = &ByTokenCount{
+			MaxTokens: b.MaxTokens,
+			counter:   &EstimateCounter{},
+		}
+	}
+	return b.inner
+}
+
+// Truncate 使用估算 Token 数截断。
+func (b *ByTokenEstimate) Truncate(messages []models.Message) []models.Message {
+	return b.strategy().Truncate(messages)
+}
+
+// ---- 工具函数 ----
+
 func splitSystem(messages []models.Message) (system []models.Message, history []models.Message) {
 	for _, m := range messages {
 		if m.Role == models.RoleSystem {
@@ -97,20 +193,6 @@ func splitSystem(messages []models.Message) (system []models.Message, history []
 	return
 }
 
-// estimateTokens 估算消息列表的 Token 数。
-// 英文：字符数 / 4；中文：字符数 * 1.5（粗略估算）。
-// 这个函数故意简单，实际项目应替换为精确的 tiktoken 实现。
-func estimateTokens(messages []models.Message) int {
-	total := 0
-	for _, m := range messages {
-		// 每条消息有约 4 个 token 的固定开销（角色标记等）
-		total += 4
-		total += len([]rune(m.Content)) // 按 Unicode 字符数估算
-	}
-	return total
-}
-
-// reverseMessages 原地反转消息切片。
 func reverseMessages(msgs []models.Message) {
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]

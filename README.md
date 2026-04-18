@@ -5,7 +5,7 @@
 这个仓库不是“为了演示而演示”的玩具 Demo，而是按真实后端工程的要求，逐步搭建一个可扩展的对话助手 / 客服系统。课程当前已经完成：
 
 - Lesson 01：生产级 LLM Client
-- Lesson 02：多轮对话管理
+- Lesson 02：多轮对话管理 + 课后作业增强
 - Lesson 03：Agent Loop（ReAct）准备中
 
 仓库地址当前是 `go-llm-client`，但 Go Module 名仍为 `github.com/pengpn/go-llm-agent`，这是为了保持代码内部导入路径一致。
@@ -38,6 +38,16 @@
 - 并发安全，适合后续接入 Web 服务或客服系统
 - 命令行聊天示例，可直接体验完整链路
 
+### Lesson 02 课后作业：已完成增强
+
+- Session 支持 JSON 持久化与恢复
+- 保存全量历史，恢复后可切换不同截断策略重新计算
+- 使用临时文件 + 原子重命名，避免写入中断导致文件损坏
+- 引入 `TokenCounter` 接口，隔离精确计数实现与业务逻辑
+- 支持 `TikTokenCounter` 精确计算，模型不支持时自动降级为估算
+- 保留 `ByTokenEstimate` 兼容旧代码，推荐新代码使用 `NewByTokenCount`
+- 为截断与持久化补充边界测试，覆盖空输入、预算边界、损坏文件、自动建目录等场景
+
 ## 项目结构
 
 ```text
@@ -46,7 +56,7 @@
 ├── config/             # 配置加载与校验
 ├── examples/chatbot/   # 命令行客服示例
 ├── models/             # 通用数据结构：Message / Usage / Response
-├── session/            # 会话、上下文截断、多用户 Session 管理
+├── session/            # 会话、上下文截断、持久化、多用户 Session 管理
 ├── .env.example        # 环境变量示例
 ├── config.yaml         # 非敏感默认配置
 └── AGENTS.md           # 课程上下文与教学约定
@@ -106,6 +116,14 @@ go run ./examples/chatbot/
 CONFIG_FILE=./config.yaml go run ./examples/chatbot/
 ```
 
+### 4. 运行测试
+
+```bash
+go test ./...
+```
+
+这一步很重要，因为这个仓库不是只追求“能跑”，而是希望把 Agent 系统底层组件做成可验证、可回归、可迭代的工程资产。
+
 ## 支持的 Provider
 
 项目目前按 OpenAI 兼容接口设计，支持以下常见 Provider：
@@ -149,9 +167,55 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Println(resp.Content)
+fmt.Println(resp.Content)
 }
 ```
+
+## Session 持久化示例
+
+Lesson 2 的作业完成后，Session 已经可以保存和恢复：
+
+```go
+strategy := session.NewByTokenCount(4000, "gpt-4o-mini")
+
+sess := session.NewSession("user_001", "你是专业客服", strategy)
+sess.AddUserMessage("帮我查询订单状态")
+
+if err := sess.Save("./data/sessions/user_001.json"); err != nil {
+	panic(err)
+}
+
+loaded, err := session.LoadSession("./data/sessions/user_001.json", strategy)
+if err != nil {
+	panic(err)
+}
+
+_ = loaded
+```
+
+这里有两个关键设计点：
+
+- 文件里保存的是全量历史，而不是截断后的结果，因为存原始数据才能在未来切换策略时不丢信息
+- 截断策略不写入文件，而由加载方注入，因为“数据”与“行为”解耦后更容易演进
+
+## 精确 Token 计数
+
+之前的按字符估算适合快速起步，但真实系统里，是否超上下文窗口、是否打满预算，最好基于更接近模型真实编码方式的计数。
+
+因此现在的设计是：
+
+- `TokenCounter` 作为抽象接口，负责隔离具体计数实现
+- `TikTokenCounter` 用于支持的 OpenAI 模型精确计数
+- `EstimateCounter` 作为兜底方案，保证在智谱、通义或未知模型上仍可工作
+- `ByTokenEstimate` 保留向后兼容，避免旧调用方升级时全部重写
+
+推荐新代码优先使用：
+
+```go
+strategy := session.NewByTokenCount(4000, "gpt-4o-mini")
+```
+
+这样做的原因不是“为了多一个抽象层”，而是为了把第三方依赖、模型兼容性和业务截断逻辑拆开，后续更容易测试、替换和扩展。
 
 ## 下一步课程路线
 
@@ -168,10 +232,10 @@ func main() {
 
 ## 已知待办
 
-- Session JSON 序列化持久化到文件
-- 更精确的 Token 计算（如接入 tiktoken）
-- 补充单元测试与集成测试
 - 进入 Lesson 03，落地最小 ReAct Agent
+- 为 `client` 模块补充更系统的重试、流式与并发测试
+- 为 Session 持久化增加批量加载 / 自动恢复能力
+- 评估是否为不同 Provider 增加更贴近真实编码的 Token 计数适配
 
 ## 代码规范
 
@@ -190,8 +254,8 @@ func main() {
 
 ## 课后作业
 
-如果你正在跟着这个仓库学习，建议先完成这三个练习：
+Lesson 2 的课后作业已经完成。下一步建议进入 Lesson 3 之前，先做这三个练习：
 
-1. 给 `session` 模块增加 JSON 持久化能力，并思考如何处理 TTL 恢复
-2. 为 `client` 补充单元测试，重点覆盖重试和并发控制
-3. 设计一个最小 Tool 接口，为下一节 ReAct Agent 做准备
+1. 设计最小 Tool 接口，明确 `Name`、`Description`、`Call` 的边界
+2. 用订单查询场景设计一个最小 ReAct Loop，先手写，不急着上框架
+3. 思考 Agent 的停止条件、最大步数和工具错误恢复策略
