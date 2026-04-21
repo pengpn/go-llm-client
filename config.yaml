@@ -2,7 +2,7 @@
 # 此文件只存非敏感配置，API Key 请写入 .env 或直接设置环境变量
 
 llm:
-  # Provider 可选值：openai / zhipu / tongyi / ollama
+  # Provider 可选值：openai / zhipu / tongyi / ollama / deepseek
   provider: openai
 
   # 模型名称，可被环境变量 LLM_MODEL 覆盖

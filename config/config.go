@@ -139,6 +139,9 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("TONGYI_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
+	if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+		cfg.LLM.APIKey = v
+	}
 	// 通用覆盖（优先级最高）
 	if v := os.Getenv("LLM_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
@@ -164,7 +167,7 @@ func (c *Config) Validate() error {
 	// Ollama 本地运行不需要 API Key
 	if c.LLM.Provider != "ollama" && c.LLM.APIKey == "" {
 		return fmt.Errorf(
-			"缺少 API Key：请设置环境变量 OPENAI_API_KEY / ZHIPU_API_KEY / TONGYI_API_KEY / LLM_API_KEY",
+			"缺少 API Key：请设置环境变量 OPENAI_API_KEY / ZHIPU_API_KEY / TONGYI_API_KEY / DEEPSEEK_API_KEY / LLM_API_KEY",
 		)
 	}
 

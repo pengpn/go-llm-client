@@ -137,12 +137,13 @@ CONFIG_FILE=./my-config.yaml go run ./examples/chatbot/
 
 ## 支持的 Provider
 
-| Provider | 设置 |
-|----------|------|
-| OpenAI | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` |
-| 智谱 GLM | `LLM_PROVIDER=zhipu` + `ZHIPU_API_KEY` |
-| 阿里通义 | `LLM_PROVIDER=tongyi` + `TONGYI_API_KEY` |
-| Ollama | `LLM_PROVIDER=ollama`（无需 Key） |
+| Provider | 设置 | 常用模型 |
+|----------|------|--------|
+| OpenAI | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` | gpt-4o-mini, gpt-4o |
+| 智谱 GLM | `LLM_PROVIDER=zhipu` + `ZHIPU_API_KEY` | glm-4-flash, glm-4 |
+| 阿里通义 | `LLM_PROVIDER=tongyi` + `TONGYI_API_KEY` | qwen-turbo, qwen-plus |
+| DeepSeek | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` | deepseek-chat, deepseek-reasoner |
+| Ollama | `LLM_PROVIDER=ollama`（无需 Key） | llama3, qwen2.5 |
 
 ## 代码示例
 

@@ -133,14 +133,25 @@ func WithOllama(model string) Option {
 	}
 }
 
+// WithDeepSeek 使用 DeepSeek（OpenAI 兼容协议）。
+// 常用模型：deepseek-chat（性价比高）、deepseek-reasoner（深度推理）
+func WithDeepSeek(apiKey, model string) Option {
+	return func(o *options) {
+		o.baseURL = "https://api.deepseek.com/v1"
+		o.apiKey = apiKey
+		o.model = model
+	}
+}
+
 // ---- 从 Config 构建 ----
 
 // providerBaseURLs 记录各 Provider 的默认端点。
 var providerBaseURLs = map[string]string{
-	"openai":  "https://api.openai.com/v1",
-	"zhipu":   "https://open.bigmodel.cn/api/paas/v4",
-	"tongyi":  "https://dashscope.aliyuncs.com/compatible-mode/v1",
-	"ollama":  "http://localhost:11434/v1",
+	"openai":   "https://api.openai.com/v1",
+	"zhipu":    "https://open.bigmodel.cn/api/paas/v4",
+	"tongyi":   "https://dashscope.aliyuncs.com/compatible-mode/v1",
+	"ollama":   "http://localhost:11434/v1",
+	"deepseek": "https://api.deepseek.com/v1",
 }
 
 // NewFromConfig 根据 Config 创建 Client。
