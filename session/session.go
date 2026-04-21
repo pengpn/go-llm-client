@@ -55,7 +55,7 @@ func (s *Session) AddUserMessage(content string) {
 	s.lastActiveAt = time.Now()
 }
 
-// AddAssistantMessage 追加 AI 回复消息。
+// AddAssistantMessage 追加纯文本 AI 回复消息（普通对话场景）。
 func (s *Session) AddAssistantMessage(content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,6 +64,24 @@ func (s *Session) AddAssistantMessage(content string) {
 		Role:    models.RoleAssistant,
 		Content: content,
 	})
+	s.lastActiveAt = time.Now()
+}
+
+// AddAgentTurn 追加 Agent 一轮完整交互：assistant 消息（含工具调用）+ 工具结果消息。
+//
+// 为什么要原子性地追加整轮？
+// OpenAI 协议强制要求：tool 消息必须紧跟对应的 assistant 消息之后。
+// 如果分两次调用追加，并发场景下其他 goroutine 可能在两次调用之间插入消息，
+// 导致 tool 消息与 assistant 消息不相邻，API 会报错。
+//
+// assistantMsg 是 LLM 返回的 assistant 消息（通常含 ToolCalls 字段）。
+// toolResults 是工具执行后的 tool 角色消息列表（含 ToolCallID）。
+func (s *Session) AddAgentTurn(assistantMsg models.Message, toolResults []models.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.messages = append(s.messages, assistantMsg)
+	s.messages = append(s.messages, toolResults...)
 	s.lastActiveAt = time.Now()
 }
 
