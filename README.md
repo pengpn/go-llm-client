@@ -49,6 +49,7 @@
 - `Session.AddAgentTurn` 原子写入 assistant(ToolCalls) + tool 消息，保证协议顺序
 - `applyHistoryToSession` 将 Agent 产生的完整历史写回 Session，支持跨轮次上下文
 - MaxIterations 防无限循环，工具失败作为 Observation 继续循环而不中断
+- `order_agent` 启动时自动从磁盘恢复上次会话，每轮对话后自动持久化，`clear` 时同步删除文件
 
 ## 项目结构
 
@@ -110,10 +111,13 @@ go run ./examples/chatbot/
 go run ./examples/order_agent/
 ```
 
-这是一个支持多轮对话的 Agent，工具调用历史存入 Session。支持命令：
-- 普通文本：发给 Agent 处理，自动判断是否调用工具
+这是一个支持多轮对话的 Agent，工具调用历史存入 Session，并自动持久化到磁盘：
+
+- **启动时**自动从 `./sessions/order_agent.json` 恢复上次会话，若不存在则新建
+- **每轮对话后**自动保存会话，重启程序不丢失历史
+- **`clear`**：清空对话历史，同步删除磁盘文件
 - `history`：查看当前 Session 的消息列表（包含工具调用记录）
-- `clear`：清空对话历史
+- 普通文本：发给 Agent 处理，自动判断是否调用工具
 - `quit`：退出
 
 ### 4. 运行测试
