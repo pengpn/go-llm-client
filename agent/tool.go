@@ -8,6 +8,30 @@ import (
 	"github.com/pengpn/go-llm-agent/models"
 )
 
+// NewTypedTool 是类型安全的工具创建函数。
+// 工具函数直接接收解码并校验后的类型化参数 T，无需手动 json.Unmarshal。
+//
+// 示例：
+//
+//	type GetOrderReq struct {
+//	    OrderID string `json:"order_id"`
+//	}
+//	func (r *GetOrderReq) Validate() error { ... }  // 可选
+//
+//	NewTypedTool("get_order", "查询订单", params,
+//	    func(ctx context.Context, req GetOrderReq) (string, error) {
+//	        // req.OrderID 直接可用，无样板代码
+//	    })
+func NewTypedTool[T any](name, description string, params models.ToolParameters, fn func(ctx context.Context, input T) (string, error)) *Tool {
+	return NewTool(name, description, params, func(ctx context.Context, raw string) (string, error) {
+		input, err := DecodeAndValidate[T](raw)
+		if err != nil {
+			return "", err
+		}
+		return fn(ctx, input)
+	})
+}
+
 // ToolFunc 是工具函数的签名。
 // input: LLM 传来的 JSON 字符串（需要自行解析）
 // output: 执行结果（任意字符串，会作为 Observation 回传给 LLM）

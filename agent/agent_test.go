@@ -124,6 +124,18 @@ func finalMsg(content string) *models.Response {
 	}
 }
 
+// makeDefs 构造工具定义列表，用于权限测试。
+func makeDefs(names ...string) []models.ToolDefinition {
+	defs := make([]models.ToolDefinition, len(names))
+	for i, n := range names {
+		defs[i] = models.ToolDefinition{
+			Type: "function",
+			Function: models.FunctionDefinition{Name: n},
+		}
+	}
+	return defs
+}
+
 // ====================================================================
 // Run 测试
 // ====================================================================
@@ -333,7 +345,7 @@ func TestExecuteToolCalls_Parallel(t *testing.T) {
 	ag := &Agent{registry: registry}
 
 	start := time.Now()
-	results, err := ag.executeToolCalls(context.Background(), toolCalls)
+	results, err := ag.executeToolCalls(context.Background(), toolCalls, ContinueOnError)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -375,7 +387,7 @@ func TestExecuteToolCalls_PartialFailure(t *testing.T) {
 		toolCall("id_fail", "fail_tool", "{}"),
 	}
 
-	results, err := ag.executeToolCalls(context.Background(), calls)
+	results, err := ag.executeToolCalls(context.Background(), calls, ContinueOnError)
 
 	if err != nil {
 		t.Fatalf("部分工具失败不应导致 executeToolCalls 返回 error，got: %v", err)
@@ -399,7 +411,7 @@ func TestExecuteToolCalls_PartialFailure(t *testing.T) {
 
 func TestExecuteToolCalls_Empty(t *testing.T) {
 	ag := &Agent{registry: NewRegistry()}
-	results, err := ag.executeToolCalls(context.Background(), nil)
+	results, err := ag.executeToolCalls(context.Background(), nil, ContinueOnError)
 	if err != nil {
 		t.Fatal(err)
 	}
