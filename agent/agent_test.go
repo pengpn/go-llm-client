@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -482,5 +483,96 @@ func TestRegistry_OverwriteTool(t *testing.T) {
 	_, err := r.Execute(context.Background(), "my_tool", "{}")
 	if err == nil {
 		t.Error("覆盖后的工具应是 errorTool，期望返回 error")
+	}
+}
+
+// ====================================================================
+// 作业1：ErrorStrategy 测试
+// ====================================================================
+
+func TestRun_AbortOnError_StopsOnToolFailure(t *testing.T) {
+	// AbortOnError：工具失败 → Run 立即返回 error，不再调用 LLM
+	tc := toolCall("id_fail", "fail_tool", "{}")
+	mock := newMock(toolCallMsg(tc))
+
+	ag := New(mock, buildTestRegistry(errorTool("fail_tool")))
+
+	_, _, err := ag.Run(
+		context.Background(),
+		[]models.Message{{Role: models.RoleUser, Content: "触发工具"}},
+		WithErrorStrategy(AbortOnError),
+	)
+
+	if err == nil {
+		t.Fatal("AbortOnError 策略下工具失败应返回 error，got nil")
+	}
+	// 错误信息应包含工具名，方便定位
+	if !strings.Contains(err.Error(), "fail_tool") {
+		t.Errorf("error 应包含工具名 fail_tool，got: %v", err)
+	}
+	// LLM 只调用一次：工具失败后不应再调 LLM
+	if mock.callCount() != 1 {
+		t.Errorf("AbortOnError 应只调用 LLM 1 次，got %d", mock.callCount())
+	}
+}
+
+func TestRun_AbortOnError_MultipleTools_FirstFailAborts(t *testing.T) {
+	// 多工具并发时，任意一个失败 → 整体 abort
+	calls := []models.ToolCall{
+		toolCall("id_ok", "echo", `{"q":"ok"}`),
+		toolCall("id_fail", "fail_tool", "{}"),
+	}
+	mock := newMock(toolCallMsg(calls...))
+
+	ag := New(mock, buildTestRegistry(echoTool("echo"), errorTool("fail_tool")))
+
+	_, _, err := ag.Run(
+		context.Background(),
+		[]models.Message{{Role: models.RoleUser, Content: "并发工具"}},
+		WithErrorStrategy(AbortOnError),
+	)
+
+	if err == nil {
+		t.Fatal("AbortOnError 策略下任意工具失败应返回 error")
+	}
+}
+
+func TestRun_ContinueOnError_PassesErrorAsObservation(t *testing.T) {
+	// ContinueOnError（默认）：工具失败 → 错误信息作为 Observation → LLM 继续决策
+	tc := toolCall("id_fail", "fail_tool", "{}")
+	mock := newMock(
+		toolCallMsg(tc),
+		finalMsg("工具失败了，但我仍然可以帮您"),
+	)
+
+	ag := New(mock, buildTestRegistry(errorTool("fail_tool")))
+
+	answer, _, err := ag.Run(
+		context.Background(),
+		[]models.Message{{Role: models.RoleUser, Content: "触发工具"}},
+		WithErrorStrategy(ContinueOnError),
+	)
+
+	if err != nil {
+		t.Fatalf("ContinueOnError 下不应返回 error，got: %v", err)
+	}
+	if answer == "" {
+		t.Error("应返回最终答案")
+	}
+	// LLM 应被调用两次：第一次触发工具，第二次处理工具结果
+	if mock.callCount() != 2 {
+		t.Errorf("LLM 应被调用 2 次，got %d", mock.callCount())
+	}
+	// 第二次 LLM 调用的消息历史中应包含工具失败的 Observation
+	secondCallMsgs := mock.calls[1].messages
+	foundErrorObs := false
+	for _, msg := range secondCallMsgs {
+		if msg.Role == models.RoleTool && strings.Contains(msg.Content, "工具执行失败") {
+			foundErrorObs = true
+			break
+		}
+	}
+	if !foundErrorObs {
+		t.Error("LLM 第二次调用应在历史中看到工具失败的 Observation")
 	}
 }

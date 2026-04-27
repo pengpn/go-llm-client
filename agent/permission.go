@@ -62,3 +62,35 @@ func (g *RoleGate) Allowed(userID, toolName string) bool {
 	}
 	return tools[toolName]
 }
+
+// UserGate 按用户 ID 直接配置工具白名单（比 RoleGate 更细粒度）。
+// 适用于需要为每个用户单独定制权限的场景。
+// 未配置的用户拒绝所有工具访问（最小权限原则）。
+type UserGate struct {
+	userTools map[string]map[string]bool // userID -> allowed tool names
+}
+
+// NewUserGate 创建一个空的 UserGate。
+func NewUserGate() *UserGate {
+	return &UserGate{userTools: make(map[string]map[string]bool)}
+}
+
+// Allow 为指定用户追加可访问的工具列表。支持链式调用，多次调用累加不覆盖。
+func (g *UserGate) Allow(userID string, tools ...string) *UserGate {
+	if g.userTools[userID] == nil {
+		g.userTools[userID] = make(map[string]bool, len(tools))
+	}
+	for _, t := range tools {
+		g.userTools[userID][t] = true
+	}
+	return g
+}
+
+// Allowed 检查用户是否可以调用指定工具。
+func (g *UserGate) Allowed(userID, toolName string) bool {
+	tools, ok := g.userTools[userID]
+	if !ok {
+		return false
+	}
+	return tools[toolName]
+}

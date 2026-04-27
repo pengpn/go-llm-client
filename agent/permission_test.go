@@ -110,3 +110,87 @@ func TestFilterDefinitions_DenyAll_ReturnsEmpty(t *testing.T) {
 		t.Errorf("DenyAll 应过滤所有工具，got %d 个", len(result))
 	}
 }
+
+// ---- UserGate ----
+
+func TestUserGate_AllowedTools(t *testing.T) {
+	gate := NewUserGate().
+		Allow("alice", "read", "write").
+		Allow("bob", "read")
+
+	if !gate.Allowed("alice", "read") {
+		t.Error("alice 应可访问 read")
+	}
+	if !gate.Allowed("alice", "write") {
+		t.Error("alice 应可访问 write")
+	}
+	if !gate.Allowed("bob", "read") {
+		t.Error("bob 应可访问 read")
+	}
+	if gate.Allowed("bob", "write") {
+		t.Error("bob 不应访问 write")
+	}
+}
+
+func TestUserGate_UnknownUserDeniedAll(t *testing.T) {
+	// 未配置的用户应拒绝所有工具（最小权限原则）
+	gate := NewUserGate().Allow("alice", "read")
+	if gate.Allowed("charlie", "read") {
+		t.Error("未配置的用户应拒绝所有工具访问")
+	}
+}
+
+func TestUserGate_MultipleAllowCallsAccumulate(t *testing.T) {
+	// 多次 Allow 调用应累加，而非覆盖
+	gate := NewUserGate().
+		Allow("alice", "tool_a").
+		Allow("alice", "tool_b")
+
+	if !gate.Allowed("alice", "tool_a") {
+		t.Error("tool_a 应可访问（第一次 Allow）")
+	}
+	if !gate.Allowed("alice", "tool_b") {
+		t.Error("tool_b 应可访问（第二次 Allow 追加，非覆盖）")
+	}
+}
+
+func TestUserGate_EmptyAllowList(t *testing.T) {
+	// Allow 不传工具时，用户被配置了但白名单为空
+	gate := NewUserGate().Allow("alice") // 没有传工具名
+	if gate.Allowed("alice", "any_tool") {
+		t.Error("空白名单应拒绝所有工具")
+	}
+}
+
+func TestUserGate_EmptyUserID(t *testing.T) {
+	gate := NewUserGate().Allow("alice", "tool_a")
+	if gate.Allowed("", "tool_a") {
+		t.Error("空 userID 应拒绝访问（未配置用户）")
+	}
+}
+
+func TestUserGate_ImplementsGateInterface(t *testing.T) {
+	// 编译期验证 UserGate 实现了 Gate 接口
+	var _ Gate = NewUserGate()
+}
+
+func TestUserGate_WithFilterDefinitions(t *testing.T) {
+	// UserGate 与 filterDefinitions 集成：过滤工具列表
+	defs := makeDefs("tool_a", "tool_b", "tool_c")
+	gate := NewUserGate().Allow("u1", "tool_a", "tool_c")
+
+	result := filterDefinitions(defs, gate, "u1")
+	if len(result) != 2 {
+		t.Fatalf("应过滤出 2 个工具，got %d", len(result))
+	}
+	names := make(map[string]bool)
+	for _, d := range result {
+		names[d.Function.Name] = true
+	}
+	if !names["tool_a"] || !names["tool_c"] {
+		t.Errorf("结果应包含 tool_a 和 tool_c，got %v", names)
+	}
+	if names["tool_b"] {
+		t.Error("tool_b 未被授权，不应出现在结果中")
+	}
+}

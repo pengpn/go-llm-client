@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -90,6 +91,9 @@ func (r *UserIDReq) Validate() error {
 	return nil
 }
 
+// orderIDRegex 编译一次，所有请求复用。
+var orderIDRegex = regexp.MustCompile(`^ORDER-\d+$`)
+
 type CancelOrderReq struct {
 	OrderID string `json:"order_id"`
 	Reason  string `json:"reason"`
@@ -99,8 +103,14 @@ func (r *CancelOrderReq) Validate() error {
 	if strings.TrimSpace(r.OrderID) == "" {
 		return fmt.Errorf("order_id 不能为空")
 	}
+	if !orderIDRegex.MatchString(r.OrderID) {
+		return fmt.Errorf("order_id 格式不正确，应为 ORDER-数字，如 ORDER-001，got %q", r.OrderID)
+	}
 	if strings.TrimSpace(r.Reason) == "" {
 		return fmt.Errorf("取消原因 reason 不能为空")
+	}
+	if len([]rune(r.Reason)) > 100 {
+		return fmt.Errorf("取消原因不能超过 100 个字符，当前 %d 个", len([]rune(r.Reason)))
 	}
 	return nil
 }
