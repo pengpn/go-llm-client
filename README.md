@@ -9,6 +9,8 @@
 - **Lesson 01**：生产级 LLM Client
 - **Lesson 02**：多轮对话管理 + 持久化 + tiktoken 精确计数
 - **Lesson 03**：Agent Loop（ReAct / Function Calling）+ 并行工具调用 + Session 集成
+- **Lesson 04**：工具集成深入：泛型解码、权限控制、错误恢复策略
+- **Lesson 05**：RAG 知识库接入：向量化 + Qdrant 存储 + 语义检索
 
 ## 为什么这样设计
 
@@ -51,14 +53,37 @@
 - MaxIterations 防无限循环，工具失败作为 Observation 继续循环而不中断
 - `order_agent` 启动时自动从磁盘恢复上次会话，每轮对话后自动持久化，`clear` 时同步删除文件
 
+### Lesson 04：工具集成深入
+
+- 泛型解码层 `DecodeAndValidate[T]`：工具函数直接接收强类型结构体，零 JSON 样板代码
+- `NewTypedTool[T]` 类型安全工具创建，编译期保证类型正确
+- `Validator` 接口自动触发校验：实现接口即校验，不实现即跳过，零侵入
+- `Gate` 接口 + `RoleGate` / `UserGate`：基于角色或用户 ID 的工具权限控制
+- `filterDefinitions`：LLM 只看到当前用户被允许的工具子集，从源头防止越权调用
+- `ErrorStrategy`（ContinueOnError / AbortOnError）：独立工具失败继续循环，链式依赖失败即止损
+- `RunOption` 函数选项：`WithUser` / `WithGate` / `WithErrorStrategy`，完全向后兼容
+
+### Lesson 05：RAG 知识库接入
+
+- `rag.Embedder` 接口 + `QwenEmbedder`：使用通义 `text-embedding-v3`（1024 维），批量向量化减少 ~70% API 延迟
+- `rag.Chunker` 接口 + `FixedSizeChunker`：固定大小切片 + 重叠窗口，中文 rune 安全，防止截断汉字
+- `rag.VectorStore` 接口 + `QdrantStore`：通过 REST API 对接 Qdrant，无需 gRPC 依赖
+- `rag.Pipeline`：切片 → 批量向量化 → 写入，内容哈希 ID 实现幂等 Indexing
+- `rag.Retriever`：问题向量化 → 相似度检索 → 组装结构化上下文
+- `rag_agent`：订单 FAQ 知识库 Demo，检索结果注入 Prompt，LLM 严格基于知识库回答
+
 ## 项目结构
 
 ```text
 .
 ├── agent/
-│   ├── agent.go        # Agent Loop、LLMClient 接口、并发工具执行
+│   ├── agent.go        # Agent Loop、LLMClient 接口、并发工具执行、ErrorStrategy
 │   ├── agent_test.go   # mock 测试：直接回答/工具调用/并行/失败/最大迭代
-│   └── tool.go         # Tool 定义、ToolFunc 签名、Registry 注册表
+│   ├── decode.go       # 泛型解码层：DecodeInput[T]、DecodeAndValidate[T]、Validator 接口
+│   ├── decode_test.go  # 解码层单元测试（7个）
+│   ├── permission.go   # Gate 接口、AllowAll/DenyAll/RoleGate/UserGate
+│   ├── permission_test.go # 权限控制测试（12个）
+│   └── tool.go         # Tool 定义、NewTypedTool[T]、ToolFunc、Registry
 ├── client/
 │   ├── client.go       # LLM 调用层：重试、Chat、ChatWithTools
 │   ├── cost.go         # Token 成本统计
@@ -68,10 +93,17 @@
 │   └── config.go       # 配置结构体，分层加载（env > .env > yaml > 默认值）
 ├── examples/
 │   ├── chatbot/        # 命令行多轮对话 Demo
-│   └── order_agent/    # 多轮对话订单查询 Agent（Session + Agent 联动）
+│   ├── order_agent/    # 多轮对话订单查询 Agent（Session + Agent 联动）
+│   └── rag_agent/      # RAG 知识库客服 Demo（订单 FAQ + 语义检索）
 ├── models/
 │   ├── message.go      # Message / Usage / Response / ChatRequest / ChatResponse
 │   └── tool.go         # ToolCall / ToolDefinition / FunctionDefinition / ToolParameters
+├── rag/
+│   ├── chunker.go      # Chunker 接口 + FixedSizeChunker（rune 安全，重叠窗口）
+│   ├── embedder.go     # Embedder 接口 + QwenEmbedder（text-embedding-v3）
+│   ├── pipeline.go     # Indexing Pipeline：切片 → 批量向量化 → 写入，幂等 ID
+│   ├── retriever.go    # Retriever：向量化查询 → 检索 → 组装上下文
+│   └── store.go        # VectorStore 接口 + QdrantStore（REST API）
 ├── session/
 │   ├── manager.go      # 多用户 Session Manager，TTL 清理
 │   ├── persist.go      # JSON 序列化持久化，原子写入
@@ -90,11 +122,11 @@
 
 ### 1. 准备环境
 
-要求：Go 1.23.1+，以及一个可用的 LLM API Key。
+要求：Go 1.23.1+，Docker，以及一个可用的 LLM API Key。
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入 OPENAI_API_KEY
+# 编辑 .env，填入所需 API Key
 ```
 
 ### 2. 运行命令行客服 Demo
@@ -120,13 +152,28 @@ go run ./examples/order_agent/
 - 普通文本：发给 Agent 处理，自动判断是否调用工具
 - `quit`：退出
 
-### 4. 运行测试
+### 4. 运行 RAG 知识库客服
+
+```bash
+# 启动 Qdrant 向量数据库
+docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
+
+# 设置通义 API Key（用于 Embedding + 对话模型）
+export DASHSCOPE_API_KEY=your_key
+
+# 启动 RAG 客服
+go run ./examples/rag_agent/
+```
+
+首次启动会自动建立订单 FAQ 知识库索引，之后进入对话模式。每次回答会显示检索来源和相似度得分。
+
+### 5. 运行测试
 
 ```bash
 go test ./...
 ```
 
-### 5. 切换 Provider
+### 6. 切换 Provider
 
 ```bash
 # 切换模型
@@ -141,6 +188,8 @@ CONFIG_FILE=./my-config.yaml go run ./examples/chatbot/
 
 ## 支持的 Provider
 
+### 对话模型
+
 | Provider | 设置 | 常用模型 |
 |----------|------|--------|
 | OpenAI | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` | gpt-4o-mini, gpt-4o |
@@ -148,6 +197,14 @@ CONFIG_FILE=./my-config.yaml go run ./examples/chatbot/
 | 阿里通义 | `LLM_PROVIDER=tongyi` + `TONGYI_API_KEY` | qwen-turbo, qwen-plus |
 | DeepSeek | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` | deepseek-chat, deepseek-reasoner |
 | Ollama | `LLM_PROVIDER=ollama`（无需 Key） | llama3, qwen2.5 |
+
+### Embedding 模型（RAG 专用）
+
+| Provider | 环境变量 | 模型 | 维度 |
+|----------|---------|------|------|
+| 阿里通义 | `DASHSCOPE_API_KEY` | text-embedding-v3 | 1024 |
+| 智谱 | `ZHIPU_API_KEY` | embedding-3 | 2048 |
+| OpenAI | `OPENAI_API_KEY` | text-embedding-3-small | 1536 |
 
 ## 代码示例
 
@@ -180,7 +237,7 @@ loaded, _ := session.LoadSession("./sessions/user_001.json", strategy)
 
 ```go
 registry := agent.NewRegistry()
-registry.Register(agent.NewTool(
+registry.Register(agent.NewTypedTool[QueryReq](
     "get_order_status",
     "查询订单状态和物流信息",
     models.ToolParameters{
@@ -190,13 +247,32 @@ registry.Register(agent.NewTool(
         },
         Required: []string{"order_id"},
     },
-    func(ctx context.Context, input string) (string, error) {
+    func(ctx context.Context, req QueryReq) (string, error) {
         return agent.BuildToolResult(map[string]any{"status": "已发货"})
     },
 ))
 
 ag := agent.New(llmClient, registry)
 answer, history, err := ag.Run(ctx, messages)
+```
+
+### RAG 索引与检索
+
+```go
+embedder := rag.NewQwenEmbedder(os.Getenv("DASHSCOPE_API_KEY"))
+store, _ := rag.NewQdrantStore(ctx, "http://localhost:6333", "my_kb", 1024)
+
+// 建立索引
+pipeline := rag.NewPipeline(
+    rag.NewFixedSizeChunker(500, 50),
+    embedder,
+    store,
+)
+_ = pipeline.IndexText(ctx, documentText, "source_name")
+
+// 检索
+retriever := rag.NewRetriever(embedder, store, 3)
+context, hits, _ := retriever.Retrieve(ctx, "退款需要几天？")
 ```
 
 ## Agent Loop 工作流程
@@ -211,20 +287,21 @@ finish_reason = "tool_calls"?
     └─ 否 → 返回最终答案
 ```
 
-工具调用消息结构（OpenAI 协议）：
+## RAG 工作流程
 
 ```
-[assistant]  ToolCalls:[{id:"c1", name:"get_order_status", args:'{"order_id":"ORDER-001"}'}]
-[tool]       Content:'{"status":"已发货"...}',  ToolCallID:"c1"
-[assistant]  "您的订单已发货，运单号 SF123..."
+【Indexing】
+文档 → Chunker（切片）→ Embedder（向量化）→ QdrantStore（存储）
+
+【Retrieval】
+用户问题 → Embedder（向量化）→ QdrantStore.Search（相似度检索）
+         → Retriever（组装上下文）→ LLM（基于知识库回答）
 ```
 
 ## 下一步课程路线
 
 | 课程 | 主题 | 状态 |
 |------|------|------|
-| Lesson 04 | 工具集成深入：参数校验、多工具协作、错误恢复 | 🔜 |
-| Lesson 05 | RAG 知识库接入 | 待定 |
 | Lesson 06 | 完整客服系统 + 生产部署 | 待定 |
 
 ## 代码规范
