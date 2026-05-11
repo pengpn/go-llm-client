@@ -91,7 +91,10 @@ func main() {
 	)
 
 	// ── 启动 HTTP 服务器 ─────────────────────────────
-	srv := server.New(ag, sessions, pipeline, faqDocs)
+	srv := server.New(ag, sessions, pipeline, faqDocs,
+		// 每个用户每分钟最多 10 次请求，防止滥用
+		server.WithRateLimiter(10, time.Minute),
+	)
 	if err := srv.Run(":8080"); err != nil {
 		slog.Error("server exited", "err", err)
 		os.Exit(1)

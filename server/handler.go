@@ -21,6 +21,12 @@ type ChatResponse struct {
 	Answer string `json:"answer"`
 }
 
+// HistoryMessage 是对话历史中的单条消息（给前端用的精简格式）。
+type HistoryMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // handleChat 处理对话请求：获取或创建 Session → 调用 Agent → 持久化历史 → 返回答案。
 func (s *Server) handleChat(c *gin.Context) {
 	var req ChatRequest
@@ -31,6 +37,12 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	// 写入 context 供 Logger 中间件读取
 	c.Set("user_id", req.UserID)
+
+	// 频率限制：防止同一用户短时间内发送大量请求（如果配置了限流器）
+	if s.limiter != nil && !s.limiter.Allow(req.UserID) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		return
+	}
 
 	sess := s.sessions.GetOrCreate(req.UserID)
 	sess.AddUserMessage(req.Message)
@@ -80,6 +92,30 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"status":   "ok",
 		"uptime":   time.Since(s.startAt).Round(time.Second).String(),
 		"sessions": s.sessions.Count(),
+	})
+}
+
+// handleHistory 返回指定用户的完整对话历史（不含 system prompt，不截断）。
+// 用于客服管理后台查看用户对话记录。
+func (s *Server) handleHistory(c *gin.Context) {
+	userID := c.Param("user_id")
+
+	sess := s.sessions.Get(userID)
+	if sess == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在或会话已过期"})
+		return
+	}
+
+	history := sess.History()
+	msgs := make([]HistoryMessage, len(history))
+	for i, m := range history {
+		msgs[i] = HistoryMessage{Role: string(m.Role), Content: m.Content}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":  userID,
+		"messages": msgs,
+		"count":    len(msgs),
 	})
 }
 

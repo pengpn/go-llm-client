@@ -66,7 +66,7 @@ func main() {
 		}
 		fmt.Printf("  ✓ %s\n", faq.Title)
 	}
-	fmt.Println("索引完成。\n")
+	fmt.Println("索引完成。")
 
 	// ── 初始化 LLM Client（Provider 和模型由 config.yaml / .env 控制）──
 	llmClient := client.NewFromConfig(&cfg.LLM)

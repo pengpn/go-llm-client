@@ -11,9 +11,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pengpn/go-llm-agent/agent"
-	"github.com/pengpn/go-llm-agent/rag"
+	"github.com/pengpn/go-llm-agent/models"
 	"github.com/pengpn/go-llm-agent/session"
 )
+
+// AgentRunner 是 Server 依赖的 Agent 接口，便于测试注入 mock。
+// *agent.Agent 实现此接口，无需改动调用方代码。
+type AgentRunner interface {
+	Run(ctx context.Context, msgs []models.Message, opts ...agent.RunOption) (string, []models.Message, error)
+}
+
+// KBIndexer 是知识库索引接口，便于测试 /reload 接口。
+// *rag.Pipeline 实现此接口。
+type KBIndexer interface {
+	IndexText(ctx context.Context, text, source string) error
+}
 
 // FAQDoc 是知识库文档的基本单元，Title 作为来源标识，Content 是正文。
 type FAQDoc struct {
@@ -27,14 +39,29 @@ type FAQDoc struct {
 type Server struct {
 	engine   *gin.Engine
 	sessions *session.Manager
-	ag       *agent.Agent
-	pipeline *rag.Pipeline // 用于热更新知识库
-	faqDocs  []FAQDoc      // 知识库原始数据，Reload 时重新索引
+	ag       AgentRunner
+	pipeline KBIndexer    // 用于热更新知识库
+	faqDocs  []FAQDoc     // 知识库原始数据，Reload 时重新索引
 	startAt  time.Time
+	limiter  *RateLimiter // nil 表示不限流
+}
+
+// ServerOption 用于配置 Server 实例（函数式选项模式）。
+type ServerOption func(*Server)
+
+// WithRateLimiter 为 /chat 接口启用基于 user_id 的请求频率限制。
+// limit：时间窗口内允许的最大请求数，window：时间窗口大小。
+//
+// 为什么按 user_id 而非 IP 限流？
+// 客服系统面向已知用户，按 user_id 更精准：同一 NAT 下多用户互不影响。
+func WithRateLimiter(limit int, window time.Duration) ServerOption {
+	return func(s *Server) {
+		s.limiter = NewRateLimiter(limit, window)
+	}
 }
 
 // New 创建 Server 并注册所有路由。
-func New(ag *agent.Agent, sessions *session.Manager, pipeline *rag.Pipeline, faqDocs []FAQDoc) *Server {
+func New(ag AgentRunner, sessions *session.Manager, pipeline KBIndexer, faqDocs []FAQDoc, opts ...ServerOption) *Server {
 	// ReleaseMode 关闭 Gin 的调试日志，改用我们自己的 slog 中间件
 	gin.SetMode(gin.ReleaseMode)
 
@@ -46,8 +73,16 @@ func New(ag *agent.Agent, sessions *session.Manager, pipeline *rag.Pipeline, faq
 		faqDocs:  faqDocs,
 		startAt:  time.Now(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.setupRoutes()
 	return s
+}
+
+// ServeHTTP 实现 http.Handler 接口，方便 httptest 直接使用 Server 作为 handler。
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.engine.ServeHTTP(w, r)
 }
 
 func (s *Server) setupRoutes() {
@@ -57,6 +92,7 @@ func (s *Server) setupRoutes() {
 	s.engine.POST("/chat", s.handleChat)
 	s.engine.POST("/reload", s.handleReload)
 	s.engine.GET("/health", s.handleHealth)
+	s.engine.GET("/history/:user_id", s.handleHistory)
 }
 
 // Run 启动 HTTP 服务器，并在收到 SIGINT/SIGTERM 时优雅关闭。

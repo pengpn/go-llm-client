@@ -96,7 +96,7 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 🔄 Lesson 05：RAG 知识库接入
+### ✅ Lesson 05：RAG 知识库接入
 **已完成内容：**
 - `rag/embedder.go` — `Embedder` 接口 + `QwenEmbedder`（text-embedding-v3，1024维，兼容 OpenAI /embeddings 协议）
 - `rag/chunker.go` — `FixedSizeChunker`：固定大小 + 重叠窗口切片，Unicode 安全
@@ -116,19 +116,137 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - ✅ 作业2（中等）：RAG Tool 集成 — `rag/tool.go` 的 `NewSearchKBTool` 将 Retriever 包装为 `search_knowledge_base` 工具；`rag_agent/main.go` 改用 Agent Loop，LLM 自主决定何时检索
 - ✅ 作业3（挑战）：`QwenEmbedder` 单元测试 — `embedder_test.go` 9个测试；httptest.NewServer mock HTTP，覆盖空输入/乱序响应/API错误/JSON解析失败/server不可达/index越界/请求参数验证
 
-### 🔄 Lesson 06：完整客服系统 + 生产部署
+### ✅ Lesson 06：完整客服系统 + 生产部署
 **已完成内容：**
-- `server/server.go` — `Server` 结构体，Gin 路由注册，优雅关闭（signal.NotifyContext + http.Server.Shutdown，最多等 30 秒）
-- `server/handler.go` — `handleChat`（对话）、`handleReload`（热更新知识库）、`handleHealth`（健康检查）
+- `server/server.go` — `Server` 结构体（持有 `AgentRunner`/`KBIndexer` 接口），Gin 路由注册，优雅关闭，`ServerOption` 函数式选项
+- `server/handler.go` — `handleChat`（对话+限流检查）、`handleReload`（热更新知识库）、`handleHealth`（健康检查）、`handleHistory`（对话历史）
 - `server/middleware.go` — 结构化日志中间件（log/slog JSON 格式，含 method/path/status/duration/user_id）
-- `examples/customer_service/main.go` — 整合所有组件：RAG + Agent + Session Manager + HTTP 服务器
+- `server/ratelimit.go` — 滑动窗口 `RateLimiter`，基于 user_id 限流，`sync.Map` 并发安全
+- `server/server_test.go` — 13 个单元测试，全部通过（mock Agent / mock Indexer）
+- `session/session.go` — 新增 `History()` 方法，返回完整对话历史（不含 system prompt，不截断）
+- `examples/customer_service/main.go` — 整合所有组件，`WithRateLimiter(10, time.Minute)` 启用限流
 
 **核心设计思想：**
+- 接口解耦：`AgentRunner`/`KBIndexer` 接口让 server 包可独立测试，无需真实 LLM 和 Qdrant
 - 共享 vs 隔离：LLM Client / RAG Retriever 所有用户共享（无状态）；Session 按 user_id 隔离
 - 优雅关闭：SIGINT/SIGTERM → 停止接受新请求 → 等进行中请求完成（30s 超时）→ 停止 Session TTL 清理
 - 热更新知识库：`POST /reload` 重新索引 FAQ，Qdrant upsert 幂等，无需重启服务
 - 结构化日志：slog JSON 格式，方便接入 ELK/Loki 等日志平台
-- gin.Recovery() 捕获 panic，防止单个请求崩掉整个服务
+- 滑动窗口限流：按 user_id 计数（非 IP），同一 NAT 下多用户互不影响
+
+**课后作业（已完成）：**
+- ✅ 作业1：引入 `AgentRunner`/`KBIndexer` 接口 + `ServeHTTP`；`server_test.go` 13个测试全部通过
+- ✅ 作业2：`session.History()` + `GET /history/:user_id`；3个测试覆盖404/有消息/无system_prompt
+- ✅ 作业3：滑动窗口 `RateLimiter` + `WithRateLimiter` ServerOption；2个单元测试 + 1个集成测试
+
+---
+
+### 📋 Lesson 07：流式响应（SSE Streaming）
+**目标：**
+- 理解 SSE（Server-Sent Events）协议：单向推送，`Content-Type: text/event-stream`
+- 掌握 Gin `c.Stream()` 实现边生成边推送，消除用户等待感
+- 复用 Lesson 01 的 `client.StreamChat`（已有流式能力）
+- 客户端断连时通过 `c.Request.Context()` 自动取消 LLM 请求
+
+**计划内容：**
+- `POST /chat/stream` — 新增流式接口（原 `/chat` 保留）
+- `data: {token}\n\n` 格式逐 token 推送，`data: [DONE]\n\n` 标记结束
+
+**预计作业：**
+- 作业1：实现 `POST /chat/stream`，Gin `c.Stream()` 推送 SSE 事件
+- 作业2：客户端断连 → context 取消 → LLM 请求提前终止
+- 作业3：curl 验证：`curl -N http://localhost:8080/chat/stream -d '{...}'`
+
+---
+
+### 📋 Lesson 08：身份认证（API Key / JWT）
+**目标：**
+- 理解 API Key 认证（服务间）vs JWT 认证（用户登录）的适用场景
+- 用 Gin 中间件实现认证：验签 → 解析 Payload → 写入 Context
+- JWT 结构：Header.Payload.Signature，`user_id` 从 Token 读取（防伪造）
+
+**计划内容：**
+- `POST /auth/token` — API Key 换 JWT
+- 中间件 `AuthRequired` — 验证 JWT，解析 user_id 写入 Context
+- 与 Lesson 04 的 RoleGate 联动：JWT Payload 携带 role 字段
+
+**预计作业：**
+- 作业1：实现 API Key → JWT 颁发接口
+- 作业2：JWT 验证中间件，user_id 从 Token 读取
+- 作业3：Token 过期处理 + 刷新 Token 接口
+
+---
+
+### 📋 Lesson 09：容器化部署（Docker + docker-compose）
+**目标：**
+- 多阶段 Dockerfile：builder 编译 → 只复制二进制，镜像从 ~800MB 压到 ~20MB
+- docker-compose 编排：app 依赖 Qdrant，健康检查确保 Qdrant 就绪后再启动
+- 掌握 `.dockerignore`、环境变量注入、云平台部署（Railway/Render）
+
+**预计作业：**
+- 作业1：多阶段 Dockerfile，`docker build` 成功
+- 作业2：docker-compose.yml，`docker compose up` 一键启动（含 Qdrant）
+- 作业3：部署到 Railway 或 Render（免费额度）
+
+---
+
+### 📋 Lesson 10：Human-in-the-loop（人工转接）
+**目标：**
+- 设计 `transfer_to_human` 工具，Agent 自主判断何时转接
+- 工单系统：转接时生成工单，记录对话摘要供人工客服查看
+- 触发条件：用户明确要求 / 知识库无结果 / 涉及高风险场景（退款纠纷/法律）
+
+**计划内容：**
+- `transfer_to_human` 工具 → 生成工单 ID，返回"已生成工单 #TK-xxx"
+- PostgreSQL `tickets` 表：id / user_id / reason / summary / status / created_at
+- `GET /tickets` 接口 — 人工客服查看待处理工单
+
+**预计作业：**
+- 作业1：实现工具 + 工单存储
+- 作业2：`GET /tickets` 人工查看接口
+- 作业3：Prompt 设计，知识库无结果时 Agent 自动触发转接
+
+---
+
+### 📋 Lesson 11：评估体系（AI Quality Evaluation）
+**目标：**
+- LLM-as-Judge：用强模型（GPT-4o）评估另一个模型的输出质量
+- 构建测试数据集（问题 + 期望答案），实现自动化评估 Pipeline
+- 评估维度：准确性、相关性、完整性、幻觉率（0-5分制）
+
+**计划内容：**
+```
+测试集（问题+期望答案）→ 跑 Agent → LLM Judge 打分 → 输出通过率报告
+```
+- `EvalCase{Question, ExpectedAnswer}` / `EvalResult{Score, Reason}`
+- `cmd/eval/main.go` — 批量跑评估，输出每个 case 得分
+
+**预计作业：**
+- 作业1：准备 20 个测试问答对（覆盖所有 FAQ 类型）
+- 作业2：实现 `cmd/eval/main.go`，输出得分和原因
+- 作业3：对比两个不同 System Prompt 的评估结果，分析差异
+
+---
+
+### 📋 Lesson 12：多 Agent 协作
+**目标：**
+- 理解多 Agent 架构适用场景：工具数量 > 15 / 业务域边界清晰 / 需要并行子任务
+- 实现 Router Agent（意图识别 + 分发）→ Sub-Agent（专项处理）
+- 理解 Agent 间上下文传递，以及直接调用 vs 消息队列两种通信模式
+
+**计划架构：**
+```
+用户问题 → Router Agent（意图识别）
+    ├── "查订单" → Order Agent
+    ├── "看物流" → Logistics Agent
+    ├── "退款问题" → Refund Agent
+    └── "其他"   → FAQ Agent
+```
+
+**预计作业：**
+- 作业1：Router Agent，能识别"订单/物流/退款/其他"四类意图
+- 作业2：Order Sub-Agent 和 FAQ Sub-Agent
+- 作业3：测试跨 Agent 的上下文传递（Router 把 user_id 传给 Sub-Agent）
 
 ---
 

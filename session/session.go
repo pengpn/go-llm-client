@@ -118,6 +118,22 @@ func (s *Session) LastActiveAt() time.Time {
 	return s.lastActiveAt
 }
 
+// History 返回完整的对话历史（不含 system prompt，不截断）。
+// 用于 /history 接口展示原始对话记录。
+// 区别于 Messages()：Messages() 会截断供 LLM 使用，History() 返回完整记录。
+func (s *Session) History() []models.Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]models.Message, 0, len(s.messages))
+	for _, m := range s.messages {
+		if m.Role != models.RoleSystem {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
 // Clear 清除对话历史，保留 system prompt。
 // 场景：用户主动开始新话题，或管理员重置会话。
 func (s *Session) Clear() {

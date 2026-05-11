@@ -223,6 +223,86 @@ curl http://localhost:8080/health
 
 ---
 
+## 课后作业
+
+### 作业1（简单）：为 HTTP 接口编写单元测试
+
+**核心思路**：测试 HTTP Handler 需要解耦依赖，否则会真正调用 LLM 和 Qdrant。  
+引入 `AgentRunner` 和 `KBIndexer` 接口，Server 依赖接口而非具体类型（依赖反转）。
+
+```go
+// AgentRunner 接口：*agent.Agent 实现它，测试时注入 mockAgent
+type AgentRunner interface {
+    Run(ctx context.Context, msgs []models.Message, opts ...agent.RunOption) (string, []models.Message, error)
+}
+
+// KBIndexer 接口：*rag.Pipeline 实现它，测试时注入 mockIndexer
+type KBIndexer interface {
+    IndexText(ctx context.Context, text, source string) error
+}
+
+// Server 实现 http.Handler 接口，httptest 可以直接用
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    s.engine.ServeHTTP(w, r)
+}
+```
+
+测试覆盖（`server/server_test.go`）：
+- `/health`：返回 status/uptime/sessions 字段
+- `/chat`：成功、缺少字段（400）、Agent 报错（500）
+- `/reload`：成功、Indexer 报错（500）
+
+### 作业2（中等）：实现 `GET /history/:user_id`
+
+**原理**：Session 的 `Messages()` 是截断后的 LLM 输入；`History()` 是完整历史（不含 system prompt）。
+
+```go
+// session/session.go 新增
+func (s *Session) History() []models.Message {
+    // 返回所有非 system 消息，不截断
+}
+
+// handler：session 不存在返回 404，存在则返回消息列表
+// 路由：GET /history/:user_id
+```
+
+测试覆盖：
+- 用户不存在 → 404
+- 先 `/chat` 再 `/history` → 返回 user + assistant 消息
+- 历史中不含 system prompt
+
+### 作业3（挑战）：添加基于 user_id 的频率限制
+
+**原理**：滑动窗口算法——只统计最近 N 秒内的请求数，超过阈值返回 429。
+
+```
+滑动窗口（1分钟）：
+时间轴：────────────────────────────►
+       [t-60s]    [现在]
+               ←窗口→
+只统计窗口内的请求时间戳，超出 limit 拒绝请求。
+```
+
+实现要点（`server/ratelimit.go`）：
+- `userBucket` 持有该用户的时间戳列表（独立加锁，互不影响）
+- `allow()` 清理过期时间戳 + 检查数量（不可变：创建新 slice）
+- `RateLimiter` 用 `sync.Map` 存储所有用户的 bucket
+- 通过 `WithRateLimiter(10, time.Minute)` 挂载到 Server
+
+```bash
+# 效果验证：快速发3次请求（limit=2）
+curl http://localhost:8080/chat -d '{"user_id":"u1","message":"hi"}'  # 200
+curl http://localhost:8080/chat -d '{"user_id":"u1","message":"hi"}'  # 200
+curl http://localhost:8080/chat -d '{"user_id":"u1","message":"hi"}'  # 429
+```
+
+**已完成：**
+- ✅ 作业1：引入 `AgentRunner`/`KBIndexer` 接口 + `ServeHTTP`；`server_test.go` 13个测试全部通过
+- ✅ 作业2：`session.History()` + `GET /history/:user_id`；3个测试覆盖404/有消息/无system_prompt
+- ✅ 作业3：滑动窗口 `RateLimiter` + `WithRateLimiter` ServerOption；2个单元测试 + 1个集成测试
+
+---
+
 ## 六课能力全图
 
 ```
