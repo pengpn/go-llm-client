@@ -66,19 +66,55 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 🔜 Lesson 04：工具集成（Function Calling 深入）
-**计划内容：**
-- 工具参数校验与统一解码层（减少每个工具重复写 json.Unmarshal）
-- 多工具协作场景（一次回答需要串联多个工具）
-- 错误恢复策略（工具失败后 LLM 重试 vs 降级回答）
-- 工具权限控制（不同用户可调用的工具集不同）
+### ✅ Lesson 04：工具集成（Function Calling 深入）
+**已完成内容：**
+- `agent/decode.go` — 泛型解码层：`DecodeInput[T]`、`DecodeAndValidate[T]`、`Validator` 接口
+- `agent/tool.go` — `NewTypedTool[T]`：类型安全工具创建，工具函数直接接收解码后的结构体
+- `agent/permission.go` — `Gate` 接口 + `AllowAll`/`DenyAll`/`RoleGate`，基于角色的工具权限控制
+- `agent/agent.go` — `ErrorStrategy`（ContinueOnError/AbortOnError）、`RunOption`（WithUser/WithGate/WithErrorStrategy）、`AgentOption`（WithDefaultGate）
+
+**核心设计思想：**
+- 泛型 `DecodeAndValidate[T]` 消除样板代码：工具函数零 JSON 样板，只写业务逻辑
+- `Validator` 接口自动触发：实现即校验，不实现即跳过，零侵入
+- `Gate` 接口 + `filterDefinitions`：LLM 只看到当前用户被允许的工具子集，从源头防止越权调用
+- `ErrorStrategy` 分离两种场景：独立工具 ContinueOnError（LLM 自主决策），链式依赖 AbortOnError（失败即止损）
+- `RunOption` 函数选项：不改变 `Run` 基础签名，完全向后兼容
+
+**课后作业（已完成）：**
+- ✅ 统一解码层：decode.go + NewTypedTool[T]，order_agent 所有工具迁移完成
+- ✅ 权限控制：RoleGate，USER-001 不可访问 cancel_order，ADMIN-001 可访问
+- ✅ 单元测试：decode_test.go（7个）、permission_test.go（12个），全部通过
+- ✅ 作业1（AbortOnError）：3个测试覆盖单工具失败终止、多工具并发失败、ContinueOnError继续循环+验证Observation内容
+- ✅ 作业2（复合Validator）：CancelOrderReq 增加 order_id 格式校验（`^ORDER-\d+$`）和 reason 长度校验（≤100字符）；validator_test.go 8个测试含边界值
+- ✅ 作业3（UserGate）：UserGate 实现（按userID白名单，累加Allow，未配置用户拒绝）；7个测试含接口合规编译期验证和filterDefinitions集成测试
+
+---
+
+### 🔄 Lesson 05：RAG 知识库接入
+**已完成内容：**
+- `rag/embedder.go` — `Embedder` 接口 + `QwenEmbedder`（text-embedding-v3，1024维，兼容 OpenAI /embeddings 协议）
+- `rag/chunker.go` — `FixedSizeChunker`：固定大小 + 重叠窗口切片，Unicode 安全
+- `rag/store.go` — `VectorStore` 接口 + `QdrantStore`（REST API，Cosine 距离，幂等 upsert）
+- `rag/retriever.go` — 检索器：问题向量化 → 相似度搜索 → 组装上下文；`EmbedderInterface` 便于 mock 测试
+- `rag/pipeline.go` — Indexing Pipeline：切片 → 批量向量化 → 写入；内容哈希 ID 保证幂等
+- `examples/rag_agent/` — 完整订单客服 Demo，假数据 FAQ 8 条，Qdrant Docker 本地部署
+
+**核心设计思想：**
+- Qdrant 只存向量（数字），Embedding 模型负责文字→向量翻译，两者职责分离
+- 批量 Embed：一次 API 调用处理所有 chunk，节省 ~70% 延迟
+- 内容哈希 ID：相同内容重复 Index 不产生重复条目（幂等 Indexing）
+- 接口隔离：`EmbedderInterface` + `VectorStore` 接口，测试可 mock，Provider 可替换
+
+**课后作业（待完成）：**
+- ⬜ 作业1（中等）：相似度阈值过滤 — 给 `Retriever` 增加 `minScore` 参数，过滤低相关度结果，防止不相关内容塞入 Prompt
+- ⬜ 作业2（中等）：RAG Tool 集成 — 把检索封装成 Agent Tool（`search_knowledge_base`），让 Agent Loop 自主决定是否检索，而非每次强制注入上下文
+- ⬜ 作业3（挑战）：`QwenEmbedder` 单元测试 — 用 `httptest.NewServer` mock HTTP，覆盖批量顺序保证、API 错误处理、空输入处理
 
 ---
 
 ### 待完成课程
 | 课程 | 主题 |
 |------|------|
-| Lesson 05 | RAG 知识库接入 |
 | Lesson 06 | 完整客服系统 + 生产部署 |
 
 ---

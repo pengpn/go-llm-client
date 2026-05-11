@@ -96,11 +96,25 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 🔜 Lesson 05：RAG 知识库接入
-**计划内容：**
-- 向量化文档与存储（Qdrant / pgvector）
-- 检索增强生成（语义搜索 + 重排序）
-- 知识库更新与缓存策略
+### 🔄 Lesson 05：RAG 知识库接入
+**已完成内容：**
+- `rag/embedder.go` — `Embedder` 接口 + `QwenEmbedder`（text-embedding-v3，1024维，兼容 OpenAI /embeddings 协议）
+- `rag/chunker.go` — `FixedSizeChunker`：固定大小 + 重叠窗口切片，Unicode 安全
+- `rag/store.go` — `VectorStore` 接口 + `QdrantStore`（REST API，Cosine 距离，幂等 upsert）
+- `rag/retriever.go` — 检索器：问题向量化 → 相似度搜索 → 组装上下文；`EmbedderInterface` 便于 mock 测试
+- `rag/pipeline.go` — Indexing Pipeline：切片 → 批量向量化 → 写入；内容哈希 ID 保证幂等
+- `examples/rag_agent/` — 完整订单客服 Demo，假数据 FAQ 8 条，Qdrant Docker 本地部署
+
+**核心设计思想：**
+- Qdrant 只存向量（数字），Embedding 模型负责文字→向量翻译，两者职责分离
+- 批量 Embed：一次 API 调用处理所有 chunk，节省 ~70% 延迟
+- 内容哈希 ID：相同内容重复 Index 不产生重复条目（幂等 Indexing）
+- 接口隔离：`EmbedderInterface` + `VectorStore` 接口，测试可 mock，Provider 可替换
+
+**课后作业（待完成）：**
+- ✅ 作业1（中等）：相似度阈值过滤 — `WithMinScore` 函数式选项，`filterByScore` 过滤低分结果；retriever_test.go 8个测试全部通过
+- ⬜ 作业2（中等）：RAG Tool 集成 — 把检索封装成 Agent Tool（`search_knowledge_base`），让 Agent Loop 自主决定是否检索，而非每次强制注入上下文
+- ⬜ 作业3（挑战）：`QwenEmbedder` 单元测试 — 用 `httptest.NewServer` mock HTTP，覆盖批量顺序保证、API 错误处理、空输入处理
 
 ### 待完成课程
 | 课程 | 主题 |
