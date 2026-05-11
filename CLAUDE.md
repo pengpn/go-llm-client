@@ -113,7 +113,7 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 **课后作业（待完成）：**
 - ✅ 作业1（中等）：相似度阈值过滤 — `WithMinScore` 函数式选项，`filterByScore` 过滤低分结果；retriever_test.go 8个测试全部通过
-- ⬜ 作业2（中等）：RAG Tool 集成 — 把检索封装成 Agent Tool（`search_knowledge_base`），让 Agent Loop 自主决定是否检索，而非每次强制注入上下文
+- ✅ 作业2（中等）：RAG Tool 集成 — `rag/tool.go` 的 `NewSearchKBTool` 将 Retriever 包装为 `search_knowledge_base` 工具；`rag_agent/main.go` 改用 Agent Loop，LLM 自主决定何时检索
 - ⬜ 作业3（挑战）：`QwenEmbedder` 单元测试 — 用 `httptest.NewServer` mock HTTP，覆盖批量顺序保证、API 错误处理、空输入处理
 
 ### 待完成课程
