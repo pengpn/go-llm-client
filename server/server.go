@@ -21,6 +21,12 @@ type AgentRunner interface {
 	Run(ctx context.Context, msgs []models.Message, opts ...agent.RunOption) (string, []models.Message, error)
 }
 
+// StreamingAgentRunner 是可选的流式扩展接口。
+// handleChatStream 通过类型断言检查 ag 是否支持流式，不支持时降级为普通 /chat。
+type StreamingAgentRunner interface {
+	RunStream(ctx context.Context, msgs []models.Message, tokenCh chan<- string, opts ...agent.RunOption) (string, []models.Message, error)
+}
+
 // KBIndexer 是知识库索引接口，便于测试 /reload 接口。
 // *rag.Pipeline 实现此接口。
 type KBIndexer interface {
@@ -90,6 +96,7 @@ func (s *Server) setupRoutes() {
 	s.engine.Use(Logger(), gin.Recovery())
 
 	s.engine.POST("/chat", s.handleChat)
+	s.engine.POST("/chat/stream", s.handleChatStream) // SSE 流式接口
 	s.engine.POST("/reload", s.handleReload)
 	s.engine.GET("/health", s.handleHealth)
 	s.engine.GET("/history/:user_id", s.handleHistory)

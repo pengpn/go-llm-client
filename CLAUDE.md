@@ -141,21 +141,25 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 07：流式响应（SSE Streaming）
-**目标：**
-- 理解 SSE（Server-Sent Events）协议：单向推送，`Content-Type: text/event-stream`
-- 掌握 Gin `c.Stream()` 实现边生成边推送，消除用户等待感
-- 复用 Lesson 01 的 `client.StreamChat`（已有流式能力）
-- 客户端断连时通过 `c.Request.Context()` 自动取消 LLM 请求
+### ✅ Lesson 07：流式响应（SSE Streaming）
+**已完成内容：**
+- `client/stream.go` — 新增 `ChatStreamText()`，包装 `ChatStream` 返回 `<-chan string`（agent 包不依赖 client 包）
+- `agent/agent.go` — 新增 `StreamingLLMClient` 接口（可选扩展）+ `RunStream()` + `streamFinalAnswer()`
+- `server/server.go` — 新增 `StreamingAgentRunner` 接口 + `POST /chat/stream` 路由
+- `server/handler.go` — 新增 `handleChatStream()`；提取 `processChat()` 共用逻辑（解决 body 被消费后降级的问题）
+- `server/server_test.go` — 新增 3 个流式测试（用 `httptest.NewServer` 支持 `CloseNotify`）
 
-**计划内容：**
-- `POST /chat/stream` — 新增流式接口（原 `/chat` 保留）
-- `data: {token}\n\n` 格式逐 token 推送，`data: [DONE]\n\n` 标记结束
+**核心设计思想：**
+- 分阶段流式：工具调用用 `ChatWithTools`（同步快），工具完成后用 `ChatStreamText`（流式慢）
+- `StreamingLLMClient` 可选接口：类型断言检查，不支持时降级为非流式，向后兼容
+- 后台 goroutine + tokenCh + `c.Stream`：三角并发模型，`tokenCh` 桥接 Agent 和 SSE 推送
+- 客户端断连传播：`c.Request.Context()` 取消 → `RunStream` 里的 LLM 请求自动取消 → 节省 token
+- `processChat` 共用函数：解决 `/chat/stream` 降级时 body 已被消费的问题
 
-**预计作业：**
-- 作业1：实现 `POST /chat/stream`，Gin `c.Stream()` 推送 SSE 事件
-- 作业2：客户端断连 → context 取消 → LLM 请求提前终止
-- 作业3：curl 验证：`curl -N http://localhost:8080/chat/stream -d '{...}'`
+**课后作业（已完成）：**
+- ✅ 作业1：实现 `POST /chat/stream`，Gin `c.Stream()` 推送 SSE 事件；3个测试（SSE事件/降级/缺字段）
+- ✅ 作业2：客户端断连 → `ctx.Done()` 检测 → `RunStream` context 取消 → LLM 请求终止
+- ✅ 作业3：curl 验证：`curl -N http://localhost:8080/chat/stream -d '{...}'`
 
 ---
 

@@ -82,6 +82,32 @@ func (c *Client) ChatStream(ctx context.Context, messages []models.Message) (<-c
 	return ch, nil
 }
 
+// ChatStreamText 是 ChatStream 的简化版本，返回纯文本 token channel。
+// 丢弃错误 chunk（网络中断会导致 channel 提前关闭），适合直接接入 SSE 推送。
+// 为什么不直接用 ChatStream？
+// → ChatStream 返回 StreamChunk，包含 Err/Done 字段，调用方需要处理；
+// → ChatStreamText 只返回文本内容，简化接入层代码，且解耦 client 包的类型依赖。
+func (c *Client) ChatStreamText(ctx context.Context, messages []models.Message) (<-chan string, error) {
+	chunkCh, err := c.ChatStream(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan string, 32)
+	go func() {
+		defer close(out)
+		for chunk := range chunkCh {
+			if chunk.Err != nil || chunk.Done {
+				return
+			}
+			if chunk.Content != "" {
+				out <- chunk.Content
+			}
+		}
+	}()
+	return out, nil
+}
+
 // readSSE 解析 SSE（Server-Sent Events）格式的流式响应。
 // SSE 格式：每行以 "data: " 开头，以 "[DONE]" 结束。
 // 示例：

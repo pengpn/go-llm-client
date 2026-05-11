@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,6 +258,112 @@ func TestHandleHistory_NoSystemPrompt(t *testing.T) {
 		if msg["role"] == "system" {
 			t.Error("历史消息中不应包含 system prompt")
 		}
+	}
+}
+
+// --- 作业1（Lesson 07）：handleChatStream 测试 ---
+
+// mockStreamingAgent 实现 AgentRunner + StreamingAgentRunner 双接口。
+type mockStreamingAgent struct {
+	mockAgent
+	tokens []string // 模拟流式输出的 token 序列
+}
+
+func (m *mockStreamingAgent) RunStream(_ context.Context, msgs []models.Message, tokenCh chan<- string, _ ...agent.RunOption) (string, []models.Message, error) {
+	defer close(tokenCh)
+	var full strings.Builder
+	for _, t := range m.tokens {
+		tokenCh <- t
+		full.WriteString(t)
+	}
+	history := append(msgs, models.Message{Role: models.RoleAssistant, Content: full.String()})
+	return full.String(), history, nil
+}
+
+// newRealServer 创建绑定在真实 TCP 端口上的测试服务器。
+// 用于需要 http.CloseNotifier（如 c.Stream SSE）的测试场景。
+func newRealServer(t *testing.T, ag AgentRunner, indexer KBIndexer, docs []FAQDoc, opts ...ServerOption) *httptest.Server {
+	t.Helper()
+	srv := newTestServer(ag, indexer, docs, opts...)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestHandleChatStream_SSEEvents(t *testing.T) {
+	ag := &mockStreamingAgent{tokens: []string{"退款", "需要", "3-5天"}}
+	ts := newRealServer(t, ag, &mockIndexer{}, nil)
+
+	resp, err := http.Post(ts.URL+"/chat/stream", "application/json",
+		bytes.NewBufferString(`{"user_id":"s001","message":"退款要多久？"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", resp.StatusCode)
+	}
+
+	// 读取全部 SSE 响应
+	bodyBytes := make([]byte, 4096)
+	n, _ := resp.Body.Read(bodyBytes)
+	body := string(bodyBytes[:n])
+
+	// 验证有 token 事件（Gin SSE 格式：event:token，无空格）
+	if !strings.Contains(body, "event:token") {
+		t.Errorf("响应中缺少 SSE token 事件，body: %s", body)
+	}
+	// 验证所有 token 都在响应中
+	for _, tok := range ag.tokens {
+		if !strings.Contains(body, tok) {
+			t.Errorf("响应中缺少 token %q，body: %s", tok, body)
+		}
+	}
+	// 验证有 done 事件
+	if !strings.Contains(body, "event:done") {
+		t.Errorf("响应中缺少 SSE done 事件，body: %s", body)
+	}
+}
+
+func TestHandleChatStream_FallbackWhenNoStreaming(t *testing.T) {
+	// 普通 mockAgent 不实现 StreamingAgentRunner，应降级为非流式
+	ag := &mockAgent{answer: "直接回答"}
+	ts := newRealServer(t, ag, &mockIndexer{}, nil)
+
+	resp, err := http.Post(ts.URL+"/chat/stream", "application/json",
+		bytes.NewBufferString(`{"user_id":"s002","message":"你好"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("降级应返回 200，得到 %d", resp.StatusCode)
+	}
+
+	bodyBytes := make([]byte, 4096)
+	n, _ := resp.Body.Read(bodyBytes)
+	body := string(bodyBytes[:n])
+
+	// 降级后响应是 JSON，不是 SSE
+	if strings.Contains(body, "event:") {
+		t.Errorf("降级后不应有 SSE 格式，body: %s", body)
+	}
+	var chatResp ChatResponse
+	if err := json.Unmarshal(bodyBytes[:n], &chatResp); err != nil {
+		t.Errorf("降级后应返回 JSON，解析失败: %v，body: %s", err, body)
+	}
+}
+
+func TestHandleChatStream_MissingFields(t *testing.T) {
+	ag := &mockStreamingAgent{}
+	srv := newTestServer(ag, &mockIndexer{}, nil)
+
+	w := postJSON(srv, "/chat/stream", `{"message":"缺少user_id"}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，得到 %d", w.Code)
 	}
 }
 

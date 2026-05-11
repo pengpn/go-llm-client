@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/pengpn/go-llm-agent/models"
@@ -16,6 +17,14 @@ const MaxIterations = 10
 // 定义为接口便于测试注入 mock，也便于将来替换底层实现。
 type LLMClient interface {
 	ChatWithTools(ctx context.Context, messages []models.Message, tools []models.ToolDefinition) (*models.Response, error)
+}
+
+// StreamingLLMClient 是可选的流式扩展接口。
+// *client.Client 实现了此接口，通过类型断言检查是否支持流式输出。
+// 为什么不直接合并到 LLMClient？
+// → 保持向后兼容：老代码不需要实现流式方法；流式能力是"渐进增强"。
+type StreamingLLMClient interface {
+	ChatStreamText(ctx context.Context, messages []models.Message) (<-chan string, error)
 }
 
 // ErrorStrategy 定义工具执行失败时的处理策略。
@@ -131,6 +140,104 @@ func (a *Agent) Run(ctx context.Context, messages []models.Message, opts ...RunO
 	}
 
 	return "", history, fmt.Errorf("超过最大迭代次数 %d，可能存在工具调用循环", MaxIterations)
+}
+
+// RunStream 与 Run 相同，但对最终回答使用流式输出。
+//
+// 工作流程：
+//  1. 工具调用迭代：仍使用 ChatWithTools（同步），因为工具调用需要传递工具定义
+//  2. 工具执行完毕后的最终回答：使用 ChatStreamText，逐 token 写入 tokenCh
+//  3. RunStream 返回时关闭 tokenCh，通知读取方（SSE handler）流结束
+//
+// 为什么不对工具调用也使用流式？
+// → 工具调用阶段 LLM 输出的是 JSON，速度快，无需流式
+// → 流式响应不支持传递 tool definitions（无 function calling 能力）
+//
+// 降级：若 client 不支持流式（未实现 StreamingLLMClient），最终回答作为单个 token 推送。
+func (a *Agent) RunStream(ctx context.Context, messages []models.Message, tokenCh chan<- string, opts ...RunOption) (string, []models.Message, error) {
+	cfg := a.buildRunConfig(opts)
+
+	tools := filterDefinitions(a.registry.Definitions(), cfg.gate, cfg.userID)
+	history := make([]models.Message, len(messages))
+	copy(history, messages)
+
+	// 类型断言：检查 client 是否支持流式输出
+	streamClient, canStream := a.client.(StreamingLLMClient)
+	toolsExecuted := false // 是否已执行过工具调用
+
+	defer close(tokenCh) // 保证 RunStream 返回时 tokenCh 被关闭
+
+	for i := range MaxIterations {
+		// 工具已执行 + 支持流式 → 流式生成最终回答
+		if toolsExecuted && canStream {
+			return a.streamFinalAnswer(ctx, history, tokenCh, streamClient)
+		}
+
+		// 普通请求（传递工具定义，LLM 自主决定是否调用工具）
+		resp, err := a.client.ChatWithTools(ctx, history, tools)
+		if err != nil {
+			return "", history, fmt.Errorf("第 %d 轮 LLM 请求失败: %w", i+1, err)
+		}
+
+		history = append(history, models.Message{
+			Role:      models.RoleAssistant,
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		switch resp.FinishReason {
+		case "stop", "":
+			// 直接回答（无工具调用）：整体作为单个 token 推送
+			select {
+			case tokenCh <- resp.Content:
+			case <-ctx.Done():
+				return "", history, ctx.Err()
+			}
+			return resp.Content, history, nil
+
+		case "tool_calls":
+			results, err := a.executeToolCalls(ctx, resp.ToolCalls, cfg.strategy)
+			if err != nil {
+				return "", history, err
+			}
+			history = append(history, results...)
+			toolsExecuted = true
+
+		case "length":
+			return resp.Content, history, fmt.Errorf("响应被截断（超出 max_tokens）")
+
+		default:
+			return "", history, fmt.Errorf("未知的 finish_reason: %q", resp.FinishReason)
+		}
+	}
+
+	return "", history, fmt.Errorf("超过最大迭代次数 %d，可能存在工具调用循环", MaxIterations)
+}
+
+// streamFinalAnswer 调用 ChatStreamText，逐 token 写入 tokenCh，收集完整回答。
+// 在 RunStream 确认工具调用已完成后才调用，此时不需要传递工具定义。
+func (a *Agent) streamFinalAnswer(ctx context.Context, history []models.Message, tokenCh chan<- string, sc StreamingLLMClient) (string, []models.Message, error) {
+	textCh, err := sc.ChatStreamText(ctx, history)
+	if err != nil {
+		return "", history, fmt.Errorf("流式生成最终回答失败: %w", err)
+	}
+
+	var sb strings.Builder
+	for token := range textCh {
+		select {
+		case tokenCh <- token:
+			sb.WriteString(token)
+		case <-ctx.Done():
+			return "", history, ctx.Err()
+		}
+	}
+
+	answer := sb.String()
+	newHistory := append(history, models.Message{
+		Role:    models.RoleAssistant,
+		Content: answer,
+	})
+	return answer, newHistory, nil
 }
 
 // executeToolCalls 并发执行 LLM 请求的所有工具调用。

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -27,14 +28,19 @@ type HistoryMessage struct {
 	Content string `json:"content"`
 }
 
-// handleChat 处理对话请求：获取或创建 Session → 调用 Agent → 持久化历史 → 返回答案。
+// handleChat 处理对话请求：解析参数 → 调用 processChat。
 func (s *Server) handleChat(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误: " + err.Error()})
 		return
 	}
+	s.processChat(c, req)
+}
 
+// processChat 是 /chat 和 /chat/stream（降级时）的共享业务逻辑。
+// req 已由调用方解析完毕，body 不再需要读取。
+func (s *Server) processChat(c *gin.Context, req ChatRequest) {
 	// 写入 context 供 Logger 中间件读取
 	c.Set("user_id", req.UserID)
 
@@ -64,6 +70,94 @@ func (s *Server) handleChat(c *gin.Context) {
 		UserID: req.UserID,
 		Answer: answer,
 	})
+}
+
+// handleChatStream 流式对话接口，通过 SSE 逐 token 推送 LLM 回答。
+//
+// SSE 事件格式：
+//
+//	event: token\ndata: {文字片段}\n\n  — 每个 token
+//	event: done\ndata: \n\n            — 流结束
+//
+// 工作流程：
+//  1. 通过类型断言检查 ag 是否支持流式（StreamingAgentRunner）
+//  2. 不支持则降级为普通 /chat（复用 processChat，body 已解析不需要再读）
+//  3. 支持则启动后台 goroutine 运行 RunStream，token 写入 tokenCh
+//  4. c.Stream 读 tokenCh，每个 token 推送一个 SSE 事件
+//  5. tokenCh 关闭（RunStream 返回）时，推送 done 事件，结束流
+//
+// 为什么需要后台 goroutine？
+// c.Stream 是阻塞的（持续推送直到 func 返回 false）；
+// RunStream 也是阻塞的（等待 LLM 响应）；二者需要并发执行。
+func (s *Server) handleChatStream(c *gin.Context) {
+	var req ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误: " + err.Error()})
+		return
+	}
+
+	// 类型断言：检查 Agent 是否支持流式输出，不支持则降级
+	streamAg, ok := s.ag.(StreamingAgentRunner)
+	if !ok {
+		// body 已解析完毕，直接传 req 给 processChat，不再读 body
+		s.processChat(c, req)
+		return
+	}
+
+	c.Set("user_id", req.UserID)
+
+	if s.limiter != nil && !s.limiter.Allow(req.UserID) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		return
+	}
+
+	sess := s.sessions.GetOrCreate(req.UserID)
+	sess.AddUserMessage(req.Message)
+
+	msgs := sess.Messages()
+	initialLen := len(msgs)
+
+	// tokenCh 在 RunStream goroutine 和 c.Stream 之间传递 token
+	tokenCh := make(chan string, 32)
+
+	var (
+		finalAnswer string
+		history     []models.Message
+		runErr      error
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// RunStream 内部会 close(tokenCh)，通知 c.Stream 流结束
+		finalAnswer, history, runErr = streamAg.RunStream(c.Request.Context(), msgs, tokenCh)
+	}()
+
+	// 禁止代理缓冲，确保 token 实时推送到客户端
+	c.Header("X-Accel-Buffering", "no")
+
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case token, open := <-tokenCh:
+			if !open {
+				c.SSEvent("done", "")
+				return false // 结束流
+			}
+			c.SSEvent("token", token)
+			return true // 继续读下一个 token
+
+		case <-c.Request.Context().Done():
+			// 客户端断开连接，停止推送（RunStream 也会因 ctx 取消而终止）
+			return false
+		}
+	})
+
+	// c.Stream 结束后等待 RunStream 完全退出，再做 session 持久化
+	<-done
+	if runErr == nil {
+		applyHistoryToSession(sess, history, initialLen)
+	}
+	_ = finalAnswer
 }
 
 // handleReload 热更新知识库：重新索引所有 FAQ，不中断正在进行的对话。
