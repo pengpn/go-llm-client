@@ -116,10 +116,19 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - ✅ 作业2（中等）：RAG Tool 集成 — `rag/tool.go` 的 `NewSearchKBTool` 将 Retriever 包装为 `search_knowledge_base` 工具；`rag_agent/main.go` 改用 Agent Loop，LLM 自主决定何时检索
 - ✅ 作业3（挑战）：`QwenEmbedder` 单元测试 — `embedder_test.go` 9个测试；httptest.NewServer mock HTTP，覆盖空输入/乱序响应/API错误/JSON解析失败/server不可达/index越界/请求参数验证
 
-### 待完成课程
-| 课程 | 主题 |
-|------|------|
-| Lesson 06 | 完整客服系统 + 生产部署 |
+### 🔄 Lesson 06：完整客服系统 + 生产部署
+**已完成内容：**
+- `server/server.go` — `Server` 结构体，Gin 路由注册，优雅关闭（signal.NotifyContext + http.Server.Shutdown，最多等 30 秒）
+- `server/handler.go` — `handleChat`（对话）、`handleReload`（热更新知识库）、`handleHealth`（健康检查）
+- `server/middleware.go` — 结构化日志中间件（log/slog JSON 格式，含 method/path/status/duration/user_id）
+- `examples/customer_service/main.go` — 整合所有组件：RAG + Agent + Session Manager + HTTP 服务器
+
+**核心设计思想：**
+- 共享 vs 隔离：LLM Client / RAG Retriever 所有用户共享（无状态）；Session 按 user_id 隔离
+- 优雅关闭：SIGINT/SIGTERM → 停止接受新请求 → 等进行中请求完成（30s 超时）→ 停止 Session TTL 清理
+- 热更新知识库：`POST /reload` 重新索引 FAQ，Qdrant upsert 幂等，无需重启服务
+- 结构化日志：slog JSON 格式，方便接入 ELK/Loki 等日志平台
+- gin.Recovery() 捕获 panic，防止单个请求崩掉整个服务
 
 ---
 
