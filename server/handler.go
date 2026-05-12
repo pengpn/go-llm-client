@@ -136,7 +136,9 @@ func (s *Server) processChat(c *gin.Context, req ChatRequest) {
 	msgs := sess.Messages()
 	initialLen := len(msgs)
 
-	answer, history, err := s.ag.Run(c.Request.Context(), msgs)
+	// 将 userID 注入 context，供 transfer_to_human 等工具读取（无需改变工具函数签名）
+	ctx := ContextWithUserID(c.Request.Context(), userID)
+	answer, history, err := s.ag.Run(ctx, msgs)
 	if err != nil {
 		// 回滚：把刚加入的用户消息从 Session 中移除，保证历史一致
 		sess.Clear()
@@ -215,11 +217,14 @@ func (s *Server) handleChatStream(c *gin.Context) {
 		runErr      error
 	)
 
+	// 同 processChat：将 userID 注入 context，供工具函数读取
+	streamCtx := ContextWithUserID(c.Request.Context(), userID)
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		// RunStream 内部会 close(tokenCh)，通知 c.Stream 流结束
-		finalAnswer, history, runErr = streamAg.RunStream(c.Request.Context(), msgs, tokenCh)
+		finalAnswer, history, runErr = streamAg.RunStream(streamCtx, msgs, tokenCh)
 	}()
 
 	// 禁止代理缓冲，确保 token 实时推送到客户端
@@ -309,6 +314,26 @@ func (s *Server) handleHistory(c *gin.Context) {
 		"user_id":  userID,
 		"messages": msgs,
 		"count":    len(msgs),
+	})
+}
+
+// handleListTickets 返回工单列表，供人工客服查看待处理工单。
+// 可选查询参数：?status=pending（默认）/ all
+func (s *Server) handleListTickets(c *gin.Context) {
+	statusParam := c.DefaultQuery("status", "pending")
+
+	var filter TicketStatus
+	switch statusParam {
+	case "all":
+		filter = ""
+	default:
+		filter = TicketStatusPending
+	}
+
+	tickets := s.tickets.List(filter)
+	c.JSON(http.StatusOK, gin.H{
+		"tickets": tickets,
+		"count":   len(tickets),
 	})
 }
 

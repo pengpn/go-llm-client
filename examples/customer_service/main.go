@@ -24,12 +24,17 @@ const systemPrompt = `你是一个专业的订单客服助手。
 
 你有以下工具可以使用：
 - search_knowledge_base：在知识库中搜索相关内容
+- transfer_to_human：将对话转接给人工客服并生成工单
 
 处理用户问题时：
 1. 先判断是否需要查阅知识库（订单、退款、物流、支付等业务问题需要查）
 2. 对于闲聊、感谢等简单交互，直接回答无需查询
 3. 检索到内容后，严格基于参考资料回答，不要编造信息
-4. 如果知识库中没有答案，直接告知用户"这个问题我需要转接人工客服"`
+4. 遇到以下情况时，必须调用 transfer_to_human 转接人工：
+   - 知识库中确实没有答案
+   - 用户明确要求"转人工"或"联系客服"
+   - 涉及退款金额较大的争议
+   - 用户情绪激动或提到投诉、法律等词语`
 
 func main() {
 	// 初始化结构化日志（JSON 格式，方便接入日志平台）
@@ -81,8 +86,12 @@ func main() {
 	// ── 初始化 LLM Client 和 Agent ───────────────────
 	llmClient := client.NewFromConfig(&cfg.LLM)
 
+	// ── 初始化工单存储（人工转接，Lesson 10）────────────
+	ticketStore := server.NewTicketStore()
+
 	registry := agent.NewRegistry()
 	registry.Register(rag.NewSearchKBTool(retriever))
+	registry.Register(server.NewTransferTool(ticketStore))
 
 	ag := agent.New(llmClient, registry)
 
@@ -115,7 +124,8 @@ func main() {
 		opts = append(opts, server.WithAPIKeys(map[string]string{apiKey: "service"}))
 	}
 
-	srv := server.New(ag, sessions, pipeline, faqDocs, opts...)
+	srv := server.New(ag, sessions, pipeline, faqDocs,
+		append(opts, server.WithTicketStore(ticketStore))...)
 	if err := srv.Run(":8080"); err != nil {
 		slog.Error("server exited", "err", err)
 		os.Exit(1)

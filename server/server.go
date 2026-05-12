@@ -52,6 +52,7 @@ type Server struct {
 	limiter   *RateLimiter      // nil 表示不限流
 	jwtSecret []byte            // nil 表示不启用 JWT 认证
 	apiKeys   map[string]string // API Key → UserID 映射
+	tickets   *TicketStore      // nil 表示未启用人工转接工单
 }
 
 // ServerOption 用于配置 Server 实例（函数式选项模式）。
@@ -71,6 +72,14 @@ func WithJWTSecret(secret []byte) ServerOption {
 func WithAPIKeys(keys map[string]string) ServerOption {
 	return func(s *Server) {
 		s.apiKeys = keys
+	}
+}
+
+// WithTicketStore 启用人工转接工单功能，注册 GET /tickets 路由。
+// store 应与注册到 Agent 的 NewTransferTool(store) 共享同一个实例。
+func WithTicketStore(store *TicketStore) ServerOption {
+	return func(s *Server) {
+		s.tickets = store
 	}
 }
 
@@ -126,6 +135,9 @@ func (s *Server) setupRoutes() {
 	protected.POST("/chat/stream", s.handleChatStream)
 	protected.POST("/reload", s.handleReload)
 	protected.GET("/history/:user_id", s.handleHistory)
+	if s.tickets != nil {
+		protected.GET("/tickets", s.handleListTickets)
+	}
 }
 
 // Run 启动 HTTP 服务器，并在收到 SIGINT/SIGTERM 时优雅关闭。

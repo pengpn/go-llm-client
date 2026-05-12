@@ -667,3 +667,108 @@ func TestHandleHistory_ForbiddenForOtherUser(t *testing.T) {
 		t.Fatalf("访问他人历史期望 403，得到 %d", w3.Code)
 	}
 }
+
+// ── Lesson 10：人工转接工单测试 ────────────────────────────────────────────
+
+func TestTicketStore_CreateAndList(t *testing.T) {
+	store := NewTicketStore()
+
+	t1 := store.Create("user-a", "知识库无答案", "用户询问退款进度，知识库未覆盖")
+	t2 := store.Create("user-b", "用户要求人工", "")
+
+	if t1.ID != "TK-0001" {
+		t.Errorf("期望 TK-0001，得到 %s", t1.ID)
+	}
+	if t2.ID != "TK-0002" {
+		t.Errorf("期望 TK-0002，得到 %s", t2.ID)
+	}
+
+	all := store.List("")
+	if len(all) != 2 {
+		t.Fatalf("期望 2 个工单，得到 %d", len(all))
+	}
+
+	pending := store.List(TicketStatusPending)
+	if len(pending) != 2 {
+		t.Errorf("新建工单应为 pending，得到 %d", len(pending))
+	}
+}
+
+func TestHandleListTickets_NoTicketStore_Returns404(t *testing.T) {
+	// 未配置 TicketStore 时，/tickets 路由不注册 → 404
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil)
+
+	w := getRequest(srv, "/tickets")
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("未配置工单存储期望 404，得到 %d", w.Code)
+	}
+}
+
+func TestHandleListTickets_EmptyStore(t *testing.T) {
+	store := NewTicketStore()
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil, WithTicketStore(store))
+
+	w := getRequest(srv, "/tickets")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if int(resp["count"].(float64)) != 0 {
+		t.Errorf("期望 count=0，得到 %v", resp["count"])
+	}
+}
+
+func TestHandleListTickets_WithTickets(t *testing.T) {
+	store := NewTicketStore()
+	store.Create("user-a", "知识库无答案", "摘要A")
+	store.Create("user-b", "用户要求人工", "摘要B")
+
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil, WithTicketStore(store))
+
+	w := getRequest(srv, "/tickets")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if int(resp["count"].(float64)) != 2 {
+		t.Errorf("期望 count=2，得到 %v", resp["count"])
+	}
+}
+
+func TestTransferTool_InjectsUserIDFromContext(t *testing.T) {
+	store := NewTicketStore()
+	tool := NewTransferTool(store)
+
+	// 模拟 processChat 注入 userID 到 context
+	ctx := ContextWithUserID(context.Background(), "user-test")
+	result, err := tool.Execute(ctx, `{"reason":"知识库无答案","summary":"用户询问特殊退款"}`)
+	if err != nil {
+		t.Fatalf("工具执行失败: %v", err)
+	}
+
+	// 验证工单号出现在返回值中
+	if !strings.Contains(result, "TK-") {
+		t.Errorf("期望返回值包含工单号，得到: %s", result)
+	}
+
+	// 验证工单的 userID 正确
+	tickets := store.List("")
+	if len(tickets) != 1 {
+		t.Fatalf("期望 1 个工单，得到 %d", len(tickets))
+	}
+	if tickets[0].UserID != "user-test" {
+		t.Errorf("期望 userID=user-test，得到 %q", tickets[0].UserID)
+	}
+	if tickets[0].Reason != "知识库无答案" {
+		t.Errorf("期望 reason=知识库无答案，得到 %q", tickets[0].Reason)
+	}
+}

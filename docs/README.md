@@ -13,7 +13,7 @@
 | [Lesson 07](lesson07-streaming.md) | 流式响应（SSE Streaming） | ✅ |
 | [Lesson 08](lesson08-auth.md) | 身份认证（API Key / JWT） | ✅ |
 | [Lesson 09](lesson09-docker.md) | 容器化部署（Docker + docker-compose） | ✅ |
-| [Lesson 10](lesson10-human-in-the-loop.md) | Human-in-the-loop（人工转接） | 📋 |
+| [Lesson 10](lesson10-human-in-the-loop.md) | Human-in-the-loop（人工转接） | ✅ |
 | [Lesson 11](lesson11-evaluation.md) | 评估体系（AI Quality Evaluation） | 📋 |
 | [Lesson 12](lesson12-multi-agent.md) | 多 Agent 协作 | 📋 |
 

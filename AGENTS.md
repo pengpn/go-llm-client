@@ -194,16 +194,16 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 10：Human-in-the-loop（人工转接）
-**目标：**
-- 设计 `transfer_to_human` 工具，Agent 自主判断何时转接
-- 工单系统：转接时生成工单，记录对话摘要供人工客服查看
-- 触发条件：用户明确要求 / 知识库无结果 / 涉及高风险场景（退款纠纷/法律）
+### ✅ Lesson 10：Human-in-the-loop（人工转接）
+**已完成内容：**
+- `server/ticket.go` — `TicketStore`（内存，线程安全）、`NewTransferTool`、context 注入
+- `server/handler.go` — `handleListTickets`；processChat/handleChatStream 注入 userID
+- `server/server.go` — `WithTicketStore` ServerOption
 
-**计划内容：**
-- `transfer_to_human` 工具 → 生成工单 ID，返回"已生成工单 #TK-xxx"
-- PostgreSQL `tickets` 表：id / user_id / reason / summary / status / created_at
-- `GET /tickets` 接口 — 人工客服查看待处理工单
+**核心设计思想：**
+- LLM 语义理解触发条件（非关键词匹配）
+- `context.WithValue` 传递 userID，不改变工具签名
+- 同一 TicketStore 实例，显式依赖注入
 
 **预计作业：**
 - 作业1：实现工具 + 工单存储

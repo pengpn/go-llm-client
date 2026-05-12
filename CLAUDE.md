@@ -208,21 +208,23 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 10：Human-in-the-loop（人工转接）
-**目标：**
-- 设计 `transfer_to_human` 工具，Agent 自主判断何时转接
-- 工单系统：转接时生成工单，记录对话摘要供人工客服查看
-- 触发条件：用户明确要求 / 知识库无结果 / 涉及高风险场景（退款纠纷/法律）
+### ✅ Lesson 10：Human-in-the-loop（人工转接）
+**已完成内容：**
+- `server/ticket.go` — `TicketStore`（内存存储，线程安全）、`NewTransferTool`、`ContextWithUserID`
+- `server/handler.go` — `handleListTickets`（`GET /tickets?status=pending`）；`processChat`/`handleChatStream` 注入 userID 到 context
+- `server/server.go` — `WithTicketStore` ServerOption，路由按需注册
+- `examples/customer_service/main.go` — 注册工具 + 更新 System Prompt 转接条件
 
-**计划内容：**
-- `transfer_to_human` 工具 → 生成工单 ID，返回"已生成工单 #TK-xxx"
-- PostgreSQL `tickets` 表：id / user_id / reason / summary / status / created_at
-- `GET /tickets` 接口 — 人工客服查看待处理工单
+**核心设计思想：**
+- 工具调用而非硬编码规则：LLM 语义理解触发条件，而非关键词匹配
+- `context.WithValue` 传递 userID：不改变工具函数签名，线程安全
+- 同一 TicketStore 实例：工具写入、HTTP 接口读取，显式依赖注入
+- `WithTicketStore(nil)` 时路由不注册（功能可选）
 
-**预计作业：**
-- 作业1：实现工具 + 工单存储
-- 作业2：`GET /tickets` 人工查看接口
-- 作业3：Prompt 设计，知识库无结果时 Agent 自动触发转接
+**课后作业（已完成）：**
+- ✅ 作业1：`TicketStore` + `NewTransferTool`；2个测试（创建/列表/ID递增/context注入）
+- ✅ 作业2：`GET /tickets?status=pending`；3个测试（404未配置/空列表/有工单）
+- ✅ 作业3：System Prompt 更新，4类触发条件（知识库无答案/要求人工/争议/情绪激动）
 
 ---
 
