@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  # ── Qdrant 向量数据库 ────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.0  # 锁定版本，避免意外升级破坏 API
+    ports:
+      - "6333:6333"   # REST API（我们使用）
+      - "6334:6334"   # gRPC API（可选）
+    volumes:
+      - qdrant_data:/qdrant/storage  # 持久化向量数据，容器重启后不丢失
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6333/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s  # Qdrant 冷启动需要一点时间
+    restart: unless-stopped
+
+  # ── 客服应用 ──────────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    env_file: .env           # 从 .env 文件注入 API Key 等密钥
+    environment:
+      # 覆盖 Qdrant 地址：Docker 内部用服务名 "qdrant" 代替 localhost
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      qdrant:
+        # 关键：等 Qdrant 健康检查通过后再启动 app
+        # 如果只用 depends_on: [qdrant]（无 condition），只等容器启动，不等服务就绪
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  qdrant_data:  # 具名卷，由 Docker 管理，数据存在宿主机的 /var/lib/docker/volumes/

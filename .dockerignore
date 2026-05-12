@@ -1,0 +1,25 @@
+# 版本控制（大目录，构建完全不需要）
+.git
+.gitignore
+
+# 密钥文件（绝对不能打入镜像！）
+.env
+*.key
+*.pem
+*.p12
+
+# 本地数据和文档
+data/
+docs/
+*.md
+
+# Docker 自身文件（避免循环引用）
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# IDE 和 OS 杂项
+.idea/
+.vscode/
+*.DS_Store

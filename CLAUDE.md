@@ -186,16 +186,25 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 09：容器化部署（Docker + docker-compose）
-**目标：**
-- 多阶段 Dockerfile：builder 编译 → 只复制二进制，镜像从 ~800MB 压到 ~20MB
-- docker-compose 编排：app 依赖 Qdrant，健康检查确保 Qdrant 就绪后再启动
-- 掌握 `.dockerignore`、环境变量注入、云平台部署（Railway/Render）
+### ✅ Lesson 09：容器化部署（Docker + docker-compose）
+**已完成内容：**
+- `Dockerfile` — 多阶段构建（builder golang:1.25-alpine → runtime alpine:3.19）
+- `.dockerignore` — 排除 .env、.git、data/、docs/ 等
+- `docker-compose.yml` — 编排 app + Qdrant，`depends_on: condition: service_healthy`
+- `examples/customer_service/main.go` — Qdrant URL 改为从 `QDRANT_URL` 环境变量读取
 
-**预计作业：**
-- 作业1：多阶段 Dockerfile，`docker build` 成功
-- 作业2：docker-compose.yml，`docker compose up` 一键启动（含 Qdrant）
-- 作业3：部署到 Railway 或 Render（免费额度）
+**核心设计思想：**
+- 多阶段构建：镜像从 ~800MB 压到 12MB（96% 体积缩减）
+- 层缓存：先 `COPY go.mod go.sum` + `go mod download`，代码变动不触发重新下载依赖
+- `CGO_ENABLED=0`：纯静态二进制，不依赖 glibc
+- `depends_on: condition: service_healthy`：等 Qdrant REST API 就绪后再启动 app
+- 非 root 用户运行（`adduser appuser`）：减少攻击半径
+- 12-Factor App：配置全部来自环境变量
+
+**课后作业（已完成）：**
+- ✅ 作业1：多阶段 Dockerfile，`docker build` 成功；镜像 12MB vs 单阶段 ~800MB
+- ✅ 作业2：docker-compose.yml，`docker compose up` 一键启动（含 Qdrant healthcheck）
+- ✅ 作业3：安全加固，非 root 用户运行
 
 ---
 

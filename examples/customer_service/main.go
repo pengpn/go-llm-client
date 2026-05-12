@@ -53,7 +53,11 @@ func main() {
 	// ── 初始化 RAG 组件 ──────────────────────────────
 	embedder := rag.NewQwenEmbedder(embedAPIKey)
 
-	store, err := rag.NewQdrantStore(ctx, "http://localhost:6333", "order_faq", 1024)
+	qdrantURL := os.Getenv("QDRANT_URL")
+	if qdrantURL == "" {
+		qdrantURL = "http://localhost:6333" // 本地开发默认值
+	}
+	store, err := rag.NewQdrantStore(ctx, qdrantURL, "order_faq", 1024)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "连接 Qdrant 失败（确认 Docker 已启动）: %v\n", err)
 		os.Exit(1)

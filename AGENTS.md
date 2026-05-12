@@ -176,11 +176,16 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 09：容器化部署（Docker + docker-compose）
-**目标：**
-- 多阶段 Dockerfile：builder 编译 → 只复制二进制，镜像从 ~800MB 压到 ~20MB
-- docker-compose 编排：app 依赖 Qdrant，健康检查确保 Qdrant 就绪后再启动
-- 掌握 `.dockerignore`、环境变量注入、云平台部署（Railway/Render）
+### ✅ Lesson 09：容器化部署（Docker + docker-compose）
+**已完成内容：**
+- `Dockerfile` — 多阶段构建，镜像 12MB（builder golang:alpine → runtime alpine:3.19）
+- `.dockerignore` — 排除 .env、.git 等
+- `docker-compose.yml` — app + Qdrant，`condition: service_healthy`
+
+**核心设计思想：**
+- 层缓存：先 `COPY go.mod go.sum` + `go mod download`，代码变动不触发重新下载
+- `CGO_ENABLED=0 -ldflags="-s -w"`：静态二进制，减小体积 30%
+- 非 root 用户运行，服务名 `qdrant` 代替 `localhost`
 
 **预计作业：**
 - 作业1：多阶段 Dockerfile，`docker build` 成功
