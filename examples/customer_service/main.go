@@ -91,10 +91,27 @@ func main() {
 	)
 
 	// ── 启动 HTTP 服务器 ─────────────────────────────
-	srv := server.New(ag, sessions, pipeline, faqDocs,
-		// 每个用户每分钟最多 10 次请求，防止滥用
+	opts := []server.ServerOption{
 		server.WithRateLimiter(10, time.Minute),
-	)
+	}
+
+	// JWT 认证：设置 JWT_SECRET 后自动启用（未设置则以开发模式运行，无需鉴权）
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		slog.Warn("JWT_SECRET 未设置，身份认证已禁用（开发模式）")
+	} else {
+		opts = append(opts, server.WithJWTSecret([]byte(jwtSecret)))
+		slog.Info("JWT 认证已启用")
+	}
+
+	// API Key → UserID 映射：支持通过 POST /auth/token 颁发 JWT
+	// 格式：SERVICE_API_KEY=sk-xxx  对应 user_id 为 "service"
+	apiKey := os.Getenv("SERVICE_API_KEY")
+	if apiKey != "" {
+		opts = append(opts, server.WithAPIKeys(map[string]string{apiKey: "service"}))
+	}
+
+	srv := server.New(ag, sessions, pipeline, faqDocs, opts...)
 	if err := srv.Run(":8080"); err != nil {
 		slog.Error("server exited", "err", err)
 		os.Exit(1)

@@ -158,21 +158,21 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 08：身份认证（API Key / JWT）
-**目标：**
-- 理解 API Key 认证（服务间）vs JWT 认证（用户登录）的适用场景
-- 用 Gin 中间件实现认证：验签 → 解析 Payload → 写入 Context
-- JWT 结构：Header.Payload.Signature，`user_id` 从 Token 读取（防伪造）
+### ✅ Lesson 08：身份认证（API Key / JWT）
+**已完成内容：**
+- `server/auth.go` — `generateToken`/`parseToken`（HMAC-SHA256），`AuthRequired` Gin 中间件
+- `server/handler.go` — `handleAuthToken` / `handleRefreshToken` / JWT user_id 优先 / `handleHistory` 授权
+- `server/server.go` — 路由分组：公开路由（`/auth/token`、`/health`） vs 受保护路由
 
-**计划内容：**
-- `POST /auth/token` — API Key 换 JWT
-- 中间件 `AuthRequired` — 验证 JWT，解析 user_id 写入 Context
-- 与 Lesson 04 的 RoleGate 联动：JWT Payload 携带 role 字段
+**核心设计思想：**
+- `AuthRequired(nil)` is no-op（渐进增强，开发无需改动）
+- JWT 优先：`c.GetString("user_id")` > `req.UserID`，防客户端伪造
+- 算法混淆攻击防御：明确要求 `*jwt.SigningMethodHMAC`
 
-**预计作业：**
-- 作业1：实现 API Key → JWT 颁发接口
-- 作业2：JWT 验证中间件，user_id 从 Token 读取
-- 作业3：Token 过期处理 + 刷新 Token 接口
+**课后作业（已完成）：**
+- ✅ 作业1：`handleAuthToken`；3个测试
+- ✅ 作业2：`AuthRequired` + `processChat` user_id JWT 优先；6个测试（含 403 保护）
+- ✅ 作业3：`handleRefreshToken` + `/auth/refresh` 路由；2个测试
 
 ---
 

@@ -43,17 +43,36 @@ type FAQDoc struct {
 // 共享：LLM Client（通过 agent）、RAG Pipeline/Retriever（通过 agent 工具）
 // 隔离：Session（每个 user_id 独立）
 type Server struct {
-	engine   *gin.Engine
-	sessions *session.Manager
-	ag       AgentRunner
-	pipeline KBIndexer    // 用于热更新知识库
-	faqDocs  []FAQDoc     // 知识库原始数据，Reload 时重新索引
-	startAt  time.Time
-	limiter  *RateLimiter // nil 表示不限流
+	engine    *gin.Engine
+	sessions  *session.Manager
+	ag        AgentRunner
+	pipeline  KBIndexer    // 用于热更新知识库
+	faqDocs   []FAQDoc     // 知识库原始数据，Reload 时重新索引
+	startAt   time.Time
+	limiter   *RateLimiter      // nil 表示不限流
+	jwtSecret []byte            // nil 表示不启用 JWT 认证
+	apiKeys   map[string]string // API Key → UserID 映射
 }
 
 // ServerOption 用于配置 Server 实例（函数式选项模式）。
 type ServerOption func(*Server)
+
+// WithJWTSecret 配置 JWT 签名密钥，启用身份认证中间件。
+// 不调用此选项则 JWT 认证不生效（开发/测试环境）。
+// 生产环境建议使用 32 字节以上随机值，从环境变量读取。
+func WithJWTSecret(secret []byte) ServerOption {
+	return func(s *Server) {
+		s.jwtSecret = secret
+	}
+}
+
+// WithAPIKeys 配置 API Key → UserID 映射，用于 POST /auth/token 颁发 JWT。
+// key 是 API Key 字符串，value 是对应的 user_id。
+func WithAPIKeys(keys map[string]string) ServerOption {
+	return func(s *Server) {
+		s.apiKeys = keys
+	}
+}
 
 // WithRateLimiter 为 /chat 接口启用基于 user_id 的请求频率限制。
 // limit：时间窗口内允许的最大请求数，window：时间窗口大小。
@@ -95,11 +114,18 @@ func (s *Server) setupRoutes() {
 	// gin.Recovery() 捕获 panic，防止单个请求的 panic 崩掉整个服务
 	s.engine.Use(Logger(), gin.Recovery())
 
-	s.engine.POST("/chat", s.handleChat)
-	s.engine.POST("/chat/stream", s.handleChatStream) // SSE 流式接口
-	s.engine.POST("/reload", s.handleReload)
+	// 公开路由（无需认证）
+	s.engine.POST("/auth/token", s.handleAuthToken)
 	s.engine.GET("/health", s.handleHealth)
-	s.engine.GET("/history/:user_id", s.handleHistory)
+
+	// 受保护路由：JWT 未配置时中间件是 no-op（开发/测试不受影响）
+	protected := s.engine.Group("/")
+	protected.Use(AuthRequired(s.jwtSecret))
+	protected.POST("/auth/refresh", s.handleRefreshToken)
+	protected.POST("/chat", s.handleChat)
+	protected.POST("/chat/stream", s.handleChatStream)
+	protected.POST("/reload", s.handleReload)
+	protected.GET("/history/:user_id", s.handleHistory)
 }
 
 // Run 启动 HTTP 服务器，并在收到 SIGINT/SIGTERM 时优雅关闭。

@@ -10,9 +10,80 @@ import (
 	"github.com/pengpn/go-llm-agent/session"
 )
 
+// AuthTokenRequest 是 POST /auth/token 的请求体。
+type AuthTokenRequest struct {
+	APIKey string `json:"api_key" binding:"required"`
+}
+
+// AuthTokenResponse 是 POST /auth/token 的响应体。
+type AuthTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresIn int    `json:"expires_in"` // 有效期（秒）
+	UserID    string `json:"user_id"`
+}
+
+// handleAuthToken 用 API Key 换 JWT。
+// 调用方后续请求携带 JWT：Authorization: Bearer {token}
+func (s *Server) handleAuthToken(c *gin.Context) {
+	var req AuthTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误: " + err.Error()})
+		return
+	}
+
+	userID, ok := s.apiKeys[req.APIKey]
+	if !ok {
+		// 不返回"key 不存在"的具体原因，防止枚举 key
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "无效的 API Key"})
+		return
+	}
+
+	if len(s.jwtSecret) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务端未配置 JWT 密钥"})
+		return
+	}
+
+	token, err := generateToken(userID, s.jwtSecret, tokenExpiry)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 token 失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, AuthTokenResponse{
+		Token:     token,
+		ExpiresIn: int(tokenExpiry.Seconds()),
+		UserID:    userID,
+	})
+}
+
+// handleRefreshToken 用当前有效 JWT 换一个新 JWT（延长有效期）。
+// 请求头：Authorization: Bearer {current_token}
+// 必须在 token 未过期时调用；过期后须重新用 API Key 换取。
+func (s *Server) handleRefreshToken(c *gin.Context) {
+	// AuthRequired 中间件已验证 token 并写入 user_id
+	userID := c.GetString("user_id")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证"})
+		return
+	}
+
+	token, err := generateToken(userID, s.jwtSecret, tokenExpiry)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 token 失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, AuthTokenResponse{
+		Token:     token,
+		ExpiresIn: int(tokenExpiry.Seconds()),
+		UserID:    userID,
+	})
+}
+
 // ChatRequest 是 POST /chat 的请求体。
+// UserID 可选：JWT 配置时从 token 读取；未配置 JWT 时从此字段读取（向后兼容）。
 type ChatRequest struct {
-	UserID  string `json:"user_id" binding:"required"`
+	UserID  string `json:"user_id"`
 	Message string `json:"message" binding:"required"`
 }
 
@@ -41,16 +112,25 @@ func (s *Server) handleChat(c *gin.Context) {
 // processChat 是 /chat 和 /chat/stream（降级时）的共享业务逻辑。
 // req 已由调用方解析完毕，body 不再需要读取。
 func (s *Server) processChat(c *gin.Context, req ChatRequest) {
-	// 写入 context 供 Logger 中间件读取
-	c.Set("user_id", req.UserID)
+	// JWT 优先：中间件已将 user_id 写入 Context；未配置 JWT 时从请求体取（向后兼容）。
+	// 这样可防止用户通过请求体伪造他人的 user_id。
+	userID := c.GetString("user_id")
+	if userID == "" {
+		userID = req.UserID
+	}
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "缺少用户身份，请携带有效 JWT 或在请求体中提供 user_id"})
+		return
+	}
+	c.Set("user_id", userID) // 更新 context，供 Logger 中间件读取
 
 	// 频率限制：防止同一用户短时间内发送大量请求（如果配置了限流器）
-	if s.limiter != nil && !s.limiter.Allow(req.UserID) {
+	if s.limiter != nil && !s.limiter.Allow(userID) {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
 		return
 	}
 
-	sess := s.sessions.GetOrCreate(req.UserID)
+	sess := s.sessions.GetOrCreate(userID)
 	sess.AddUserMessage(req.Message)
 
 	msgs := sess.Messages()
@@ -67,7 +147,7 @@ func (s *Server) processChat(c *gin.Context, req ChatRequest) {
 	applyHistoryToSession(sess, history, initialLen)
 
 	c.JSON(http.StatusOK, ChatResponse{
-		UserID: req.UserID,
+		UserID: userID,
 		Answer: answer,
 	})
 }
@@ -104,14 +184,23 @@ func (s *Server) handleChatStream(c *gin.Context) {
 		return
 	}
 
-	c.Set("user_id", req.UserID)
+	// JWT 优先：与 processChat 保持一致，防止伪造 user_id
+	userID := c.GetString("user_id")
+	if userID == "" {
+		userID = req.UserID
+	}
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "缺少用户身份，请携带有效 JWT 或在请求体中提供 user_id"})
+		return
+	}
+	c.Set("user_id", userID)
 
-	if s.limiter != nil && !s.limiter.Allow(req.UserID) {
+	if s.limiter != nil && !s.limiter.Allow(userID) {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
 		return
 	}
 
-	sess := s.sessions.GetOrCreate(req.UserID)
+	sess := s.sessions.GetOrCreate(userID)
 	sess.AddUserMessage(req.Message)
 
 	msgs := sess.Messages()
@@ -191,8 +280,18 @@ func (s *Server) handleHealth(c *gin.Context) {
 
 // handleHistory 返回指定用户的完整对话历史（不含 system prompt，不截断）。
 // 用于客服管理后台查看用户对话记录。
+// 安全：启用 JWT 时，用户只能查看自己的历史（callerID == userID）。
 func (s *Server) handleHistory(c *gin.Context) {
 	userID := c.Param("user_id")
+
+	// JWT 启用时做身份校验：防止 A 用户偷看 B 用户的对话记录
+	if len(s.jwtSecret) > 0 {
+		callerID := c.GetString("user_id")
+		if callerID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权查看其他用户的对话历史"})
+			return
+		}
+	}
 
 	sess := s.sessions.Get(userID)
 	if sess == nil {

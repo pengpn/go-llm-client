@@ -163,21 +163,26 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 08：身份认证（API Key / JWT）
-**目标：**
-- 理解 API Key 认证（服务间）vs JWT 认证（用户登录）的适用场景
-- 用 Gin 中间件实现认证：验签 → 解析 Payload → 写入 Context
-- JWT 结构：Header.Payload.Signature，`user_id` 从 Token 读取（防伪造）
+### ✅ Lesson 08：身份认证（API Key / JWT）
+**已完成内容：**
+- `server/auth.go` — `generateToken`/`parseToken`（HMAC-SHA256），`AuthRequired` Gin 中间件（no-op when nil）
+- `server/handler.go` — `handleAuthToken`（API Key → JWT）、`handleRefreshToken`（刷新 Token）
+- `server/handler.go` — `processChat`/`handleChatStream` 更新：JWT 优先读取 user_id，防止伪造
+- `server/handler.go` — `handleHistory` 增加授权检查：JWT 启用时只能查看自己的历史
+- `server/server.go` — 路由分组（公开：`/auth/token`、`/health`；受保护：其余所有路由）
+- `examples/customer_service/main.go` — `WithJWTSecret`/`WithAPIKeys` 选项，从 env 读取配置
 
-**计划内容：**
-- `POST /auth/token` — API Key 换 JWT
-- 中间件 `AuthRequired` — 验证 JWT，解析 user_id 写入 Context
-- 与 Lesson 04 的 RoleGate 联动：JWT Payload 携带 role 字段
+**核心设计思想：**
+- `AuthRequired(nil)` 是 no-op：渐进增强，开发模式不需要改任何代码
+- JWT 优先：`c.GetString("user_id")` > `req.UserID`，防止客户端伪造他人 user_id
+- 算法混淆攻击防御：明确要求 `*jwt.SigningMethodHMAC`，拒绝 none/RSA
+- API Key 不暴露错误原因（"无效 API Key" 统一返回），防止枚举攻击
+- Token 过期后不能刷新，必须重新换取（安全边界清晰）
 
-**预计作业：**
-- 作业1：实现 API Key → JWT 颁发接口
-- 作业2：JWT 验证中间件，user_id 从 Token 读取
-- 作业3：Token 过期处理 + 刷新 Token 接口
+**课后作业（已完成）：**
+- ✅ 作业1：`handleAuthToken`（API Key → JWT）；3个测试（成功/无效Key/缺字段）
+- ✅ 作业2：`AuthRequired` 中间件 + `processChat` user_id JWT 优先；6个测试（no-op/有效token/无效token/无header/缺userid/History403）
+- ✅ 作业3：`handleRefreshToken` + `/auth/refresh` 路由；2个测试（成功/无Token）
 
 ---
 

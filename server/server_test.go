@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,11 +120,11 @@ func TestHandleChat_Success(t *testing.T) {
 func TestHandleChat_MissingUserID(t *testing.T) {
 	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil)
 
-	// 缺少 user_id 字段
+	// 未配置 JWT 且请求体无 user_id，processChat 应返回 401
 	w := postJSON(srv, "/chat", `{"message":"退款要多久？"}`)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("期望 400，得到 %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("期望 401，得到 %d", w.Code)
 	}
 }
 
@@ -305,10 +306,12 @@ func TestHandleChatStream_SSEEvents(t *testing.T) {
 		t.Fatalf("期望 200，得到 %d", resp.StatusCode)
 	}
 
-	// 读取全部 SSE 响应
-	bodyBytes := make([]byte, 4096)
-	n, _ := resp.Body.Read(bodyBytes)
-	body := string(bodyBytes[:n])
+	// io.ReadAll 等到服务端关闭连接（c.Stream 返回 false 后 Gin 关闭连接）
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取 SSE 响应失败: %v", err)
+	}
+	body := string(bodyBytes)
 
 	// 验证有 token 事件（Gin SSE 格式：event:token，无空格）
 	if !strings.Contains(body, "event:token") {
@@ -342,25 +345,40 @@ func TestHandleChatStream_FallbackWhenNoStreaming(t *testing.T) {
 		t.Fatalf("降级应返回 200，得到 %d", resp.StatusCode)
 	}
 
-	bodyBytes := make([]byte, 4096)
-	n, _ := resp.Body.Read(bodyBytes)
-	body := string(bodyBytes[:n])
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取响应失败: %v", err)
+	}
+	body := string(bodyBytes)
 
 	// 降级后响应是 JSON，不是 SSE
 	if strings.Contains(body, "event:") {
 		t.Errorf("降级后不应有 SSE 格式，body: %s", body)
 	}
 	var chatResp ChatResponse
-	if err := json.Unmarshal(bodyBytes[:n], &chatResp); err != nil {
+	if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
 		t.Errorf("降级后应返回 JSON，解析失败: %v，body: %s", err, body)
 	}
 }
 
-func TestHandleChatStream_MissingFields(t *testing.T) {
+func TestHandleChatStream_MissingUserID(t *testing.T) {
 	ag := &mockStreamingAgent{}
 	srv := newTestServer(ag, &mockIndexer{}, nil)
 
+	// 有 message 但无 user_id，handleChatStream 应返回 401
 	w := postJSON(srv, "/chat/stream", `{"message":"缺少user_id"}`)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("期望 401，得到 %d", w.Code)
+	}
+}
+
+func TestHandleChatStream_MissingMessage(t *testing.T) {
+	ag := &mockStreamingAgent{}
+	srv := newTestServer(ag, &mockIndexer{}, nil)
+
+	// message 是 binding:"required"，缺少时应返回 400
+	w := postJSON(srv, "/chat/stream", `{"user_id":"u001"}`)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("期望 400，得到 %d", w.Code)
@@ -421,5 +439,231 @@ func TestHandleChat_RateLimited(t *testing.T) {
 	// 不同用户不受影响
 	if code := sendChat("other-user"); code != http.StatusOK {
 		t.Fatalf("other-user 期望 200，得到 %d", code)
+	}
+}
+
+// ── Lesson 08：身份认证测试 ────────────────────────────────────────────────
+
+var testJWTSecret = []byte("test-secret-32-bytes-long-enough!")
+var testAPIKeys = map[string]string{"sk-valid-key": "user-alice"}
+
+// postJSONWithToken 发送带 Bearer Token 的 POST 请求。
+func postJSONWithToken(srv *Server, path, body, token string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+// getRequestWithToken 发送带 Bearer Token 的 GET 请求。
+func getRequestWithToken(srv *Server, path, token string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, path, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+// --- POST /auth/token 测试 ---
+
+func TestHandleAuthToken_Success(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	w := postJSON(srv, "/auth/token", `{"api_key":"sk-valid-key"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d，body: %s", w.Code, w.Body.String())
+	}
+
+	var resp AuthTokenResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp.Token == "" {
+		t.Error("响应中缺少 token 字段")
+	}
+	if resp.UserID != "user-alice" {
+		t.Errorf("期望 user_id=user-alice，得到 %q", resp.UserID)
+	}
+	if resp.ExpiresIn <= 0 {
+		t.Errorf("期望 expires_in > 0，得到 %d", resp.ExpiresIn)
+	}
+}
+
+func TestHandleAuthToken_InvalidAPIKey(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	w := postJSON(srv, "/auth/token", `{"api_key":"sk-wrong-key"}`)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("期望 401，得到 %d", w.Code)
+	}
+}
+
+func TestHandleAuthToken_MissingAPIKey(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	// 缺少 api_key 字段（binding:"required" 应返回 400）
+	w := postJSON(srv, "/auth/token", `{}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，得到 %d", w.Code)
+	}
+}
+
+// --- AuthRequired 中间件测试 ---
+
+func TestAuthRequired_NoJWTConfigured_Passthrough(t *testing.T) {
+	// 未配置 JWT Secret，中间件是 no-op，请求直接放行
+	srv := newTestServer(&mockAgent{answer: "ok"}, &mockIndexer{}, nil)
+
+	// 无 Authorization 头，但 user_id 在请求体里，应正常通过
+	w := postJSON(srv, "/chat", `{"user_id":"u-test","message":"你好"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("未配置 JWT 时期望 200，得到 %d", w.Code)
+	}
+}
+
+func TestAuthRequired_ValidToken_SetsUserID(t *testing.T) {
+	srv := newTestServer(&mockAgent{answer: "ok"}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	// 先换 token
+	w := postJSON(srv, "/auth/token", `{"api_key":"sk-valid-key"}`)
+	var tokenResp AuthTokenResponse
+	json.NewDecoder(w.Body).Decode(&tokenResp)
+
+	// 用 token 请求 /chat（user_id 来自 JWT，请求体里不需要提供）
+	w2 := postJSONWithToken(srv, "/chat", `{"message":"你好"}`, tokenResp.Token)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("携带有效 JWT 期望 200，得到 %d，body: %s", w2.Code, w2.Body.String())
+	}
+
+	var chatResp ChatResponse
+	json.NewDecoder(w2.Body).Decode(&chatResp)
+
+	// user_id 应来自 JWT（user-alice），而非请求体
+	if chatResp.UserID != "user-alice" {
+		t.Errorf("期望 user_id=user-alice（来自 JWT），得到 %q", chatResp.UserID)
+	}
+}
+
+func TestAuthRequired_InvalidToken_Returns401(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	w := postJSONWithToken(srv, "/chat", `{"message":"你好"}`, "not-a-valid-jwt")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("无效 JWT 期望 401，得到 %d", w.Code)
+	}
+}
+
+func TestAuthRequired_MissingHeader_Returns401(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	// 配置了 JWT 但没有携带 Authorization 头
+	w := postJSON(srv, "/chat", `{"user_id":"u-test","message":"你好"}`)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("缺少 Authorization 期望 401，得到 %d", w.Code)
+	}
+}
+
+// --- POST /auth/refresh 测试 ---
+
+func TestHandleRefreshToken_Success(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	// 先换初始 token
+	w := postJSON(srv, "/auth/token", `{"api_key":"sk-valid-key"}`)
+	var tokenResp AuthTokenResponse
+	json.NewDecoder(w.Body).Decode(&tokenResp)
+
+	// 用当前 token 换新 token
+	w2 := postJSONWithToken(srv, "/auth/refresh", "", tokenResp.Token)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d，body: %s", w2.Code, w2.Body.String())
+	}
+
+	var refreshResp AuthTokenResponse
+	json.NewDecoder(w2.Body).Decode(&refreshResp)
+
+	if refreshResp.Token == "" {
+		t.Error("刷新后响应中缺少 token")
+	}
+	if refreshResp.UserID != "user-alice" {
+		t.Errorf("期望 user_id=user-alice，得到 %q", refreshResp.UserID)
+	}
+}
+
+func TestHandleRefreshToken_NoToken_Returns401(t *testing.T) {
+	srv := newTestServer(&mockAgent{}, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	// 未携带 token，AuthRequired 中间件拦截
+	w := postJSON(srv, "/auth/refresh", "")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("期望 401，得到 %d", w.Code)
+	}
+}
+
+// --- handleHistory 授权测试 ---
+
+func TestHandleHistory_ForbiddenForOtherUser(t *testing.T) {
+	ag := &mockAgent{answer: "ok"}
+	srv := newTestServer(ag, &mockIndexer{}, nil,
+		WithJWTSecret(testJWTSecret),
+		WithAPIKeys(testAPIKeys),
+	)
+
+	// 用 alice 的 token 访问 alice 自己的历史（先建立 session）
+	w := postJSON(srv, "/auth/token", `{"api_key":"sk-valid-key"}`)
+	var tokenResp AuthTokenResponse
+	json.NewDecoder(w.Body).Decode(&tokenResp)
+
+	// 先用 alice 的 token 发条消息（建立 session）
+	postJSONWithToken(srv, "/chat", `{"message":"你好"}`, tokenResp.Token)
+
+	// alice 访问自己的历史 → 200
+	w2 := getRequestWithToken(srv, "/history/user-alice", tokenResp.Token)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("用户访问自己历史期望 200，得到 %d，body: %s", w2.Code, w2.Body.String())
+	}
+
+	// alice 尝试访问 bob 的历史 → 403
+	w3 := getRequestWithToken(srv, "/history/user-bob", tokenResp.Token)
+	if w3.Code != http.StatusForbidden {
+		t.Fatalf("访问他人历史期望 403，得到 %d", w3.Code)
 	}
 }
