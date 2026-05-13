@@ -9,12 +9,16 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/pengpn/go-llm-agent/client"
 	"github.com/pengpn/go-llm-agent/eval"
 	"github.com/pengpn/go-llm-agent/session"
 )
 
 func main() {
+	// 自动加载项目根目录的 .env 文件，找不到时静默跳过（不影响已设置的系统环境变量）
+	_ = godotenv.Load()
+
 	var (
 		apiKey    = flag.String("key", os.Getenv("LLM_API_KEY"), "LLM API Key")
 		baseURL   = flag.String("url", os.Getenv("LLM_BASE_URL"), "LLM Base URL")
@@ -47,7 +51,7 @@ func main() {
 		*judgeURL = *baseURL
 	}
 	if *judgeModel == "" {
-		*judgeModel = "gpt-4o" // 默认用更强的模型做 judge
+		*judgeModel = *model // 默认用更强的模型做 judge,这里用回原来的模型来测试
 	}
 
 	// ── 创建 Agent（被评估对象） ─────────────────────────────────

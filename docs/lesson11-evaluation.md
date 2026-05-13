@@ -57,7 +57,40 @@ type EvalResult struct {
 func RunEval(ctx context.Context, cases []EvalCase, ag *agent.Agent) []EvalResult
 ```
 
-### 课后作业（预计）
-- 作业1：准备 20 个测试问答对（覆盖所有 FAQ 类型）
-- 作业2：实现 `cmd/eval/main.go`，输出每个 case 的得分和原因
-- 作业3：对比两个不同 System Prompt 的评估结果，分析差异
+### 课后作业
+- 作业1（入门）： 运行评估并找出分数最低的 3 个用例，分析原因（是 RAG 问题还是模型问题？）
+- 作业2（中等）： 对比 v1 和 v2 两个 System Prompt 的评估结果，写出分析报告（哪个维度提升最明显？）
+- 作业3（挑战）： 扩展 cmd/eval/main.go，支持将结果输出为 CSV 文件（方便用 Excel 分析趋势）
+
+### 总结
+
+核心设计思想
+
+  1. LLM-as-Judge 的本质是"用语义相似度替代精确匹配"
+  传统：assertEqual("3天内", actual)  → 完全匹配才过
+  Judge：score("3天内", "预计72小时到达") → 语义等价也过
+
+  2. 四维度分离，定位问题更准确
+  - accuracy_score 低 → 事实错误，可能 RAG 召回了错误文档
+  - relevance_score 低 → 答非所问，可能 System Prompt 意图理解有偏差
+  - completeness_score 低 → 信息不全，可能截断或知识库缺失
+  - hallucination_score 低 → 幻觉严重，需要更强的模型或更严格的 Prompt
+
+  3. A/B 对比实验的正确姿势
+  # 测 v1 Prompt
+  ./bin/eval -prompt v1 -key $API_KEY
+
+  # 测 v2 Prompt（增强版）
+  ./bin/eval -prompt v2 -key $API_KEY
+
+  # 对比两份报告的通过率和均分差异
+
+  4. 为什么要并发执行？
+  20 个用例 × 2 次 LLM 调用（agent + judge）= 40 次 API 调用
+  串行大约需要 40×2s=80s；并发 3 个约 28s，提速 3 倍
+
+  使用方法
+
+  export LLM_API_KEY=your-key
+  export LLM_BASE_URL=https://api.openai.com/v1
+  ./bin/eval -model gpt-4o-mini -prompt v1 -threshold 3.0
