@@ -67,6 +67,12 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 ---
 
 ### ✅ Lesson 04：工具集成（Function Calling 深入）
+**计划内容：**
+- 工具参数校验与统一解码层（减少每个工具重复写 json.Unmarshal）
+- 多工具协作场景（一次回答需要串联多个工具）
+- 错误恢复策略（工具失败后 LLM 重试 vs 降级回答）
+- 工具权限控制（不同用户可调用的工具集不同）
+
 **已完成内容：**
 - `agent/decode.go` — 泛型解码层：`DecodeInput[T]`、`DecodeAndValidate[T]`、`Validator` 接口
 - `agent/tool.go` — `NewTypedTool[T]`：类型安全工具创建，工具函数直接接收解码后的结构体
@@ -105,12 +111,10 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - 内容哈希 ID：相同内容重复 Index 不产生重复条目（幂等 Indexing）
 - 接口隔离：`EmbedderInterface` + `VectorStore` 接口，测试可 mock，Provider 可替换
 
-**课后作业（已完成）：**
+**课后作业（待完成）：**
 - ✅ 作业1（中等）：相似度阈值过滤 — `WithMinScore` 函数式选项，`filterByScore` 过滤低分结果；retriever_test.go 8个测试全部通过
 - ✅ 作业2（中等）：RAG Tool 集成 — `rag/tool.go` 的 `NewSearchKBTool` 将 Retriever 包装为 `search_knowledge_base` 工具；`rag_agent/main.go` 改用 Agent Loop，LLM 自主决定何时检索
 - ✅ 作业3（挑战）：`QwenEmbedder` 单元测试 — `embedder_test.go` 9个测试；httptest.NewServer mock HTTP，覆盖空输入/乱序响应/API错误/JSON解析失败/server不可达/index越界/请求参数验证
-
----
 
 ### ✅ Lesson 06：完整客服系统 + 生产部署
 **已完成内容：**
@@ -139,96 +143,112 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ### ✅ Lesson 07：流式响应（SSE Streaming）
 **已完成内容：**
-- `client/stream.go` — 新增 `ChatStreamText()`，包装 `ChatStream` 返回 `<-chan string`
-- `agent/agent.go` — 新增 `StreamingLLMClient` 接口 + `RunStream()` + `streamFinalAnswer()`
+- `client/stream.go` — 新增 `ChatStreamText()`，包装 `ChatStream` 返回 `<-chan string`（agent 包不依赖 client 包）
+- `agent/agent.go` — 新增 `StreamingLLMClient` 接口（可选扩展）+ `RunStream()` + `streamFinalAnswer()`
 - `server/server.go` — 新增 `StreamingAgentRunner` 接口 + `POST /chat/stream` 路由
-- `server/handler.go` — 新增 `handleChatStream()`；提取 `processChat()` 共用逻辑
+- `server/handler.go` — 新增 `handleChatStream()`；提取 `processChat()` 共用逻辑（解决 body 被消费后降级的问题）
 - `server/server_test.go` — 新增 3 个流式测试（用 `httptest.NewServer` 支持 `CloseNotify`）
 
 **核心设计思想：**
-- 分阶段流式：工具调用 `ChatWithTools`（同步），工具完成后 `ChatStreamText`（流式）
+- 分阶段流式：工具调用用 `ChatWithTools`（同步快），工具完成后用 `ChatStreamText`（流式慢）
 - `StreamingLLMClient` 可选接口：类型断言检查，不支持时降级为非流式，向后兼容
-- 后台 goroutine + tokenCh + `c.Stream`：三角并发模型
-- 客户端断连传播：`ctx.Done()` → LLM 请求取消 → 节省 token
+- 后台 goroutine + tokenCh + `c.Stream`：三角并发模型，`tokenCh` 桥接 Agent 和 SSE 推送
+- 客户端断连传播：`c.Request.Context()` 取消 → `RunStream` 里的 LLM 请求自动取消 → 节省 token
+- `processChat` 共用函数：解决 `/chat/stream` 降级时 body 已被消费的问题
 
 **课后作业（已完成）：**
-- ✅ 作业1：实现 `POST /chat/stream`，3个测试（SSE事件/降级/缺字段）
-- ✅ 作业2：客户端断连 → context 取消 → LLM 请求终止
-- ✅ 作业3：curl -N 验证流式接口
+- ✅ 作业1：实现 `POST /chat/stream`，Gin `c.Stream()` 推送 SSE 事件；3个测试（SSE事件/降级/缺字段）
+- ✅ 作业2：客户端断连 → `ctx.Done()` 检测 → `RunStream` context 取消 → LLM 请求终止
+- ✅ 作业3：curl 验证：`curl -N http://localhost:8080/chat/stream -d '{...}'`
 
 ---
 
 ### ✅ Lesson 08：身份认证（API Key / JWT）
 **已完成内容：**
-- `server/auth.go` — `generateToken`/`parseToken`（HMAC-SHA256），`AuthRequired` Gin 中间件
-- `server/handler.go` — `handleAuthToken` / `handleRefreshToken` / JWT user_id 优先 / `handleHistory` 授权
-- `server/server.go` — 路由分组：公开路由（`/auth/token`、`/health`） vs 受保护路由
+- `server/auth.go` — `generateToken`/`parseToken`（HMAC-SHA256），`AuthRequired` Gin 中间件（no-op when nil）
+- `server/handler.go` — `handleAuthToken`（API Key → JWT）、`handleRefreshToken`（刷新 Token）
+- `server/handler.go` — `processChat`/`handleChatStream` 更新：JWT 优先读取 user_id，防止伪造
+- `server/handler.go` — `handleHistory` 增加授权检查：JWT 启用时只能查看自己的历史
+- `server/server.go` — 路由分组（公开：`/auth/token`、`/health`；受保护：其余所有路由）
+- `examples/customer_service/main.go` — `WithJWTSecret`/`WithAPIKeys` 选项，从 env 读取配置
 
 **核心设计思想：**
-- `AuthRequired(nil)` is no-op（渐进增强，开发无需改动）
-- JWT 优先：`c.GetString("user_id")` > `req.UserID`，防客户端伪造
-- 算法混淆攻击防御：明确要求 `*jwt.SigningMethodHMAC`
+- `AuthRequired(nil)` 是 no-op：渐进增强，开发模式不需要改任何代码
+- JWT 优先：`c.GetString("user_id")` > `req.UserID`，防止客户端伪造他人 user_id
+- 算法混淆攻击防御：明确要求 `*jwt.SigningMethodHMAC`，拒绝 none/RSA
+- API Key 不暴露错误原因（"无效 API Key" 统一返回），防止枚举攻击
+- Token 过期后不能刷新，必须重新换取（安全边界清晰）
 
 **课后作业（已完成）：**
-- ✅ 作业1：`handleAuthToken`；3个测试
-- ✅ 作业2：`AuthRequired` + `processChat` user_id JWT 优先；6个测试（含 403 保护）
-- ✅ 作业3：`handleRefreshToken` + `/auth/refresh` 路由；2个测试
+- ✅ 作业1：`handleAuthToken`（API Key → JWT）；3个测试（成功/无效Key/缺字段）
+- ✅ 作业2：`AuthRequired` 中间件 + `processChat` user_id JWT 优先；6个测试（no-op/有效token/无效token/无header/缺userid/History403）
+- ✅ 作业3：`handleRefreshToken` + `/auth/refresh` 路由；2个测试（成功/无Token）
 
 ---
 
 ### ✅ Lesson 09：容器化部署（Docker + docker-compose）
 **已完成内容：**
-- `Dockerfile` — 多阶段构建，镜像 12MB（builder golang:alpine → runtime alpine:3.19）
-- `.dockerignore` — 排除 .env、.git 等
-- `docker-compose.yml` — app + Qdrant，`condition: service_healthy`
+- `Dockerfile` — 多阶段构建（builder golang:1.25-alpine → runtime alpine:3.19）
+- `.dockerignore` — 排除 .env、.git、data/、docs/ 等
+- `docker-compose.yml` — 编排 app + Qdrant，`depends_on: condition: service_healthy`
+- `examples/customer_service/main.go` — Qdrant URL 改为从 `QDRANT_URL` 环境变量读取
 
 **核心设计思想：**
-- 层缓存：先 `COPY go.mod go.sum` + `go mod download`，代码变动不触发重新下载
-- `CGO_ENABLED=0 -ldflags="-s -w"`：静态二进制，减小体积 30%
-- 非 root 用户运行，服务名 `qdrant` 代替 `localhost`
+- 多阶段构建：镜像从 ~800MB 压到 12MB（96% 体积缩减）
+- 层缓存：先 `COPY go.mod go.sum` + `go mod download`，代码变动不触发重新下载依赖
+- `CGO_ENABLED=0`：纯静态二进制，不依赖 glibc
+- `depends_on: condition: service_healthy`：等 Qdrant REST API 就绪后再启动 app
+- 非 root 用户运行（`adduser appuser`）：减少攻击半径
+- 12-Factor App：配置全部来自环境变量
 
-**预计作业：**
-- 作业1：多阶段 Dockerfile，`docker build` 成功
-- 作业2：docker-compose.yml，`docker compose up` 一键启动（含 Qdrant）
-- 作业3：部署到 Railway 或 Render（免费额度）
+**课后作业（已完成）：**
+- ✅ 作业1：多阶段 Dockerfile，`docker build` 成功；镜像 12MB vs 单阶段 ~800MB
+- ✅ 作业2：docker-compose.yml，`docker compose up` 一键启动（含 Qdrant healthcheck）
+- ✅ 作业3：安全加固，非 root 用户运行
 
 ---
 
 ### ✅ Lesson 10：Human-in-the-loop（人工转接）
 **已完成内容：**
-- `server/ticket.go` — `TicketStore`（内存，线程安全）、`NewTransferTool`、context 注入
-- `server/handler.go` — `handleListTickets`；processChat/handleChatStream 注入 userID
-- `server/server.go` — `WithTicketStore` ServerOption
+- `server/ticket.go` — `TicketStore`（内存存储，线程安全）、`NewTransferTool`、`ContextWithUserID`
+- `server/handler.go` — `handleListTickets`（`GET /tickets?status=pending`）；`processChat`/`handleChatStream` 注入 userID 到 context
+- `server/server.go` — `WithTicketStore` ServerOption，路由按需注册
+- `examples/customer_service/main.go` — 注册工具 + 更新 System Prompt 转接条件
 
 **核心设计思想：**
-- LLM 语义理解触发条件（非关键词匹配）
-- `context.WithValue` 传递 userID，不改变工具签名
-- 同一 TicketStore 实例，显式依赖注入
+- 工具调用而非硬编码规则：LLM 语义理解触发条件，而非关键词匹配
+- `context.WithValue` 传递 userID：不改变工具函数签名，线程安全
+- 同一 TicketStore 实例：工具写入、HTTP 接口读取，显式依赖注入
+- `WithTicketStore(nil)` 时路由不注册（功能可选）
 
-**预计作业：**
-- 作业1：实现工具 + 工单存储
-- 作业2：`GET /tickets` 人工查看接口
-- 作业3：Prompt 设计，知识库无结果时 Agent 自动触发转接
+**课后作业（已完成）：**
+- ✅ 作业1：`TicketStore` + `NewTransferTool`；2个测试（创建/列表/ID递增/context注入）
+- ✅ 作业2：`GET /tickets?status=pending`；3个测试（404未配置/空列表/有工单）
+- ✅ 作业3：System Prompt 更新，4类触发条件（知识库无答案/要求人工/争议/情绪激动）
 
 ---
 
-### 📋 Lesson 11：评估体系（AI Quality Evaluation）
-**目标：**
-- LLM-as-Judge：用强模型（GPT-4o）评估另一个模型的输出质量
-- 构建测试数据集（问题 + 期望答案），实现自动化评估 Pipeline
-- 评估维度：准确性、相关性、完整性、幻觉率（0-5分制）
+### ✅ Lesson 11：评估体系（AI Quality Evaluation）
+**已完成内容：**
+- `eval/types.go` — `EvalCase`/`EvalResult`/`EvalReport`/`CategoryStat` 数据结构
+- `eval/judge.go` — LLM Judge 评分器，四维度打分（准确/相关/完整/幻觉），Markdown 响应剥离
+- `eval/runner.go` — 批量并发评估 Runner，信号量控制并发，按 Category 分组统计
+- `eval/testdata.go` — 20 个测试用例，覆盖订单/退款/物流/商品/账户/边界场景
+- `cmd/eval/main.go` — 评估入口，`-prompt v1/v2` A/B 对比，`-csv` CSV 导出，格式化报告输出
+- `eval/*_test.go` — 13 个单元测试全部通过
 
-**计划内容：**
-```
-测试集（问题+期望答案）→ 跑 Agent → LLM Judge 打分 → 输出通过率报告
-```
-- `EvalCase{Question, ExpectedAnswer}` / `EvalResult{Score, Reason}`
-- `cmd/eval/main.go` — 批量跑评估，输出每个 case 得分
+**核心设计思想：**
+- LLM-as-Judge：用裁判模型语义评分，替代精确字符串匹配
+- 四维度分离：准确性/相关性/完整性/幻觉率独立打分，精准定位质量瓶颈
+- 加权综合分：默认 [0.35, 0.25, 0.25, 0.15]，可自定义权重
+- 并发执行：信号量限制并发数（默认 3），单用例超时保护（60s）
+- Markdown 剥离：`parseJudgeResponse` 处理 LLM 输出的 ```json 包裹和前导文本
+- A/B 对比：`-prompt v1/v2` 切换 System Prompt 版本，输出可比较的报告
+- CSV 导出：UTF-8 BOM 确保 Excel 中文正确显示，含汇总行
 
-**预计作业：**
-- 作业1：准备 20 个测试问答对（覆盖所有 FAQ 类型）
-- 作业2：实现 `cmd/eval/main.go`，输出得分和原因
-- 作业3：对比两个不同 System Prompt 的评估结果，分析差异
+**课后作业（已完成）：**
+- ✅ 作业1：运行评估找出最低分 3 个用例（order-004/003/002），分析根因（缺工具 vs 幻觉）
+- ✅ 作业3：`-csv` 参数导出 CSV（BOM 头 + 逐条数据 + 汇总行），`data/*.csv` 加入 .gitignore
 
 ---
 

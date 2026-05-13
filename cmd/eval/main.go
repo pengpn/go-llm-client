@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"os"
@@ -29,6 +30,7 @@ func main() {
 		prompt    = flag.String("prompt", "v1", "System Prompt 版本标签（用于区分对比实验）")
 		threshold = flag.Float64("threshold", 3.0, "通过阈值（0-5）")
 		concurrency = flag.Int("concurrency", 3, "并发评估数")
+		csvFile     = flag.String("csv", "", "输出 CSV 文件路径（为空则不输出）")
 	)
 	flag.Parse()
 
@@ -99,6 +101,14 @@ func main() {
 
 	// ── 输出报告 ─────────────────────────────────────────────────
 	printReport(report, *prompt, elapsed)
+
+	if *csvFile != "" {
+		if csvErr := writeCSV(*csvFile, report, *prompt); csvErr != nil {
+			fmt.Fprintf(os.Stderr, "\n❌ CSV 写入失败: %v\n", csvErr)
+			os.Exit(1)
+		}
+		fmt.Printf("\n📄 CSV 已保存至: %s\n", *csvFile)
+	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n⚠️  部分用例出错:\n%v\n", err)
@@ -172,4 +182,74 @@ func getSystemPrompt(version string) string {
 		return sp
 	}
 	return prompts["v1"]
+}
+
+// writeCSV 将评估结果写入 CSV 文件
+// BOM 头确保 Excel 打开中文不乱码
+func writeCSV(path string, report *eval.EvalReport, promptLabel string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("创建文件失败: %w", err)
+	}
+	defer f.Close()
+
+	// UTF-8 BOM，让 Excel 正确识别编码
+	if _, err := f.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return fmt.Errorf("写入 BOM 失败: %w", err)
+	}
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	header := []string{
+		"ID", "类别", "问题", "期望答案", "实际回答",
+		"准确性", "相关性", "完整性", "幻觉率", "综合分",
+		"通过", "评分理由", "Prompt版本",
+	}
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("写入表头失败: %w", err)
+	}
+
+	for _, r := range report.Results {
+		passed := "否"
+		if r.Passed {
+			passed = "是"
+		}
+		row := []string{
+			r.Case.ID,
+			r.Case.Category,
+			r.Case.Question,
+			r.Case.ExpectedAnswer,
+			r.ActualAnswer,
+			fmt.Sprintf("%.2f", r.AccuracyScore),
+			fmt.Sprintf("%.2f", r.RelevanceScore),
+			fmt.Sprintf("%.2f", r.CompletenessScore),
+			fmt.Sprintf("%.2f", r.HallucinationScore),
+			fmt.Sprintf("%.2f", r.OverallScore),
+			passed,
+			r.Reason,
+			promptLabel,
+		}
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("写入行 [%s] 失败: %w", r.Case.ID, err)
+		}
+	}
+
+	// 追加汇总行
+	if err := w.Write([]string{}); err != nil {
+		return err
+	}
+	summary := []string{
+		"汇总", "", "",
+		fmt.Sprintf("总计 %d 例", report.TotalCases),
+		fmt.Sprintf("通过 %d 例", report.PassedCases),
+		fmt.Sprintf("%.2f", report.AvgAccuracy),
+		fmt.Sprintf("%.2f", report.AvgRelevance),
+		fmt.Sprintf("%.2f", report.AvgCompleteness),
+		fmt.Sprintf("%.2f", report.AvgHallucination),
+		fmt.Sprintf("%.2f", report.AvgOverall),
+		fmt.Sprintf("%.1f%%", report.PassRate),
+		"", promptLabel,
+	}
+	return w.Write(summary)
 }

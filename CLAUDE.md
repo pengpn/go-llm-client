@@ -228,23 +228,27 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 11：评估体系（AI Quality Evaluation）
-**目标：**
-- LLM-as-Judge：用强模型（GPT-4o）评估另一个模型的输出质量
-- 构建测试数据集（问题 + 期望答案），实现自动化评估 Pipeline
-- 评估维度：准确性、相关性、完整性、幻觉率（0-5分制）
+### ✅ Lesson 11：评估体系（AI Quality Evaluation）
+**已完成内容：**
+- `eval/types.go` — `EvalCase`/`EvalResult`/`EvalReport`/`CategoryStat` 数据结构
+- `eval/judge.go` — LLM Judge 评分器，四维度打分（准确/相关/完整/幻觉），Markdown 响应剥离
+- `eval/runner.go` — 批量并发评估 Runner，信号量控制并发，按 Category 分组统计
+- `eval/testdata.go` — 20 个测试用例，覆盖订单/退款/物流/商品/账户/边界场景
+- `cmd/eval/main.go` — 评估入口，`-prompt v1/v2` A/B 对比，`-csv` CSV 导出，格式化报告输出
+- `eval/*_test.go` — 13 个单元测试全部通过
 
-**计划内容：**
-```
-测试集（问题+期望答案）→ 跑 Agent → LLM Judge 打分 → 输出通过率报告
-```
-- `EvalCase{Question, ExpectedAnswer}` / `EvalResult{Score, Reason}`
-- `cmd/eval/main.go` — 批量跑评估，输出每个 case 得分
+**核心设计思想：**
+- LLM-as-Judge：用裁判模型语义评分，替代精确字符串匹配
+- 四维度分离：准确性/相关性/完整性/幻觉率独立打分，精准定位质量瓶颈
+- 加权综合分：默认 [0.35, 0.25, 0.25, 0.15]，可自定义权重
+- 并发执行：信号量限制并发数（默认 3），单用例超时保护（60s）
+- Markdown 剥离：`parseJudgeResponse` 处理 LLM 输出的 ```json 包裹和前导文本
+- A/B 对比：`-prompt v1/v2` 切换 System Prompt 版本，输出可比较的报告
+- CSV 导出：UTF-8 BOM 确保 Excel 中文正确显示，含汇总行
 
-**预计作业：**
-- 作业1：准备 20 个测试问答对（覆盖所有 FAQ 类型）
-- 作业2：实现 `cmd/eval/main.go`，输出得分和原因
-- 作业3：对比两个不同 System Prompt 的评估结果，分析差异
+**课后作业（已完成）：**
+- ✅ 作业1：运行评估找出最低分 3 个用例（order-004/003/002），分析根因（缺工具 vs 幻觉）
+- ✅ 作业3：`-csv` 参数导出 CSV（BOM 头 + 逐条数据 + 汇总行），`data/*.csv` 加入 .gitignore
 
 ---
 
