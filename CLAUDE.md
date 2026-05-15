@@ -267,10 +267,9 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - `WithFallback` 兜底 Agent：无法匹配意图时降级到 FAQ（纯 LLM 回答）
 - `RunOption` 透传：Router 把 `WithUser`/`WithGate` 等选项原样传给 Sub-Agent
 
-**课后作业（待完成）：**
-- 作业1：用 curl 或交互式 Demo 测试四类意图的路由准确性
-- 作业2：给 Router 增加 "confidence" 字段（0-1），低于 0.5 时自动走 fallback
-- 作业3：实现并行分发（用户同时问"查订单 ORDER-001 和物流"，Router 拆成两个子任务并发执行）
+**课后作业（已完成）：**
+- ✅ 作业2：Intent 增加 `Confidence` 字段 + `WithConfidenceThreshold` 选项，低于阈值自动走 fallback；4个测试
+- ✅ 作业3：`RouteParallel` 并行分发 + `classifyMulti` 多意图识别 + `parseIntents` 数组/单对象兼容解析 + `deduplicateIntents` 去重 + `mergeAnswers` 合并；9个新测试
 
 ---
 
