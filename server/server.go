@@ -50,9 +50,10 @@ type Server struct {
 	faqDocs   []FAQDoc     // 知识库原始数据，Reload 时重新索引
 	startAt   time.Time
 	limiter   *RateLimiter      // nil 表示不限流
-	jwtSecret []byte            // nil 表示不启用 JWT 认证
-	apiKeys   map[string]string // API Key → UserID 映射
-	tickets   *TicketStore      // nil 表示未启用人工转接工单
+	jwtSecret       []byte            // nil 表示不启用 JWT 认证
+	apiKeys         map[string]string // API Key → UserID 映射
+	tickets         *TicketStore      // nil 表示未启用人工转接工单
+	ticketExtractor *TicketExtractor  // nil 表示不自动提取工单
 }
 
 // ServerOption 用于配置 Server 实例（函数式选项模式）。
@@ -80,6 +81,15 @@ func WithAPIKeys(keys map[string]string) ServerOption {
 func WithTicketStore(store *TicketStore) ServerOption {
 	return func(s *Server) {
 		s.tickets = store
+	}
+}
+
+// WithTicketExtractor 启用自动工单提取功能。
+// 每次 /chat 回答完成后自动从对话中提取工单信息，附在响应中返回。
+// 提取失败不影响主流程（仅日志记录），ticket 字段为 null。
+func WithTicketExtractor(te *TicketExtractor) ServerOption {
+	return func(s *Server) {
+		s.ticketExtractor = te
 	}
 }
 

@@ -124,8 +124,11 @@ func main() {
 		opts = append(opts, server.WithAPIKeys(map[string]string{apiKey: "service"}))
 	}
 
+	// ── 自动工单提取（Lesson 13）：每次 /chat 回答后自动从对话中提取工单信息 ──
+	ticketExtractor := server.NewTicketExtractor(llmClient)
+
 	srv := server.New(ag, sessions, pipeline, faqDocs,
-		append(opts, server.WithTicketStore(ticketStore))...)
+		append(opts, server.WithTicketStore(ticketStore), server.WithTicketExtractor(ticketExtractor))...)
 	if err := srv.Run(":8080"); err != nil {
 		slog.Error("server exited", "err", err)
 		os.Exit(1)

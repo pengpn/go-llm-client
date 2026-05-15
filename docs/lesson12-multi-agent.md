@@ -49,7 +49,31 @@ func callOrderAgent(ctx context.Context, req SubAgentReq) (string, error) {
 Router → 发消息到队列 → Sub-Agent 消费 → 结果回写
 ```
 
-### 课后作业（预计）
--作业1（入门）： 运行 Demo 测试路由准确性，试试"订单查询"、"快递到哪了"、"我要退款"、"你好"分别路由到哪个 Agent
--作业2（中等）： 给 Router 的 Intent 增加 Confidence float64 字段，LLM 输出置信度，低于 0.5 时自动走 fallback
--作业3（挑战）： 实现并行分发——当用户同时问"查 ORDER-001 状态和物流"时，Router 拆成两个子任务并发给 Order Agent 和 Logistics Agent，合并结果返回
+## 关键文件
+
+| 文件 | 作用 |
+|------|------|
+| `agent/router.go` | Router Agent：意图分类 + 分发 + 并行执行 |
+| `agent/router_test.go` | 19 个测试（解析/路由/fallback/置信度/并行） |
+| `examples/multi_agent/main.go` | 四路由客服 Demo |
+
+## 核心设计决策
+
+| 决策 | 选择 | 为什么 |
+|------|------|--------|
+| Router 用 LLM vs 规则 | LLM | 语义理解，"我买的东西到哪了" → logistics |
+| Sub-Agent 复用 vs 新建 | 工厂函数新建 | 避免跨请求状态污染 |
+| 意图匹配大小写 | 不敏感 | LLM 输出不可控 |
+| 置信度低时 | fallback 兜底 | 不报错，降级到 FAQ |
+| RunOption 传递 | 透传给 Sub-Agent | 权限控制在子层生效 |
+
+## 课后作业
+
+- ✅ 作业2：Intent 增加 `Confidence` 字段 + `WithConfidenceThreshold`，低于阈值自动走 fallback
+- ✅ 作业3：`RouteParallel` 并行分发 + `parseIntents` 多意图解析 + `deduplicateIntents` 去重 + `mergeAnswers` 合并
+
+## 总结
+
+多 Agent 的本质是**分治**：每个 Sub-Agent 只管自己领域的 2-3 个工具，比单 Agent 挂 20 个工具选错率低得多。
+Router 是轻量的"调度器"——一次 LLM 调用判断意图，成本可忽略。
+置信度机制是"不确定就交给通用 FAQ"，比硬匹配失败返回错误更友好。

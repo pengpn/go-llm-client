@@ -744,6 +744,110 @@ func TestHandleListTickets_WithTickets(t *testing.T) {
 	}
 }
 
+// ── Lesson 13 作业3：自动提取工单测试 ────────────────────────────────────
+
+// mockExtractorClient 实现 structured.LLMClient，模拟返回结构化提取结果。
+type mockExtractorClient struct {
+	resp *models.Response
+	err  error
+}
+
+func (m *mockExtractorClient) ChatWithTools(_ context.Context, _ []models.Message, _ []models.ToolDefinition) (*models.Response, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.resp, nil
+}
+
+func TestHandleChat_WithTicketExtractor(t *testing.T) {
+	ag := &mockAgent{answer: "您的订单 ORDER-001 正在派送中"}
+	extClient := &mockExtractorClient{
+		resp: &models.Response{
+			FinishReason: "tool_calls",
+			ToolCalls: []models.ToolCall{
+				{
+					ID:   "call-1",
+					Type: "function",
+					Function: models.FunctionCall{
+						Name:      "extract_ticket",
+						Arguments: `{"category":"物流","priority":3,"summary":"查询ORDER-001物流状态","emotion":"焦急"}`,
+					},
+				},
+			},
+		},
+	}
+	te := NewTicketExtractor(extClient)
+
+	srv := newTestServer(ag, &mockIndexer{}, nil, WithTicketExtractor(te))
+
+	w := postJSON(srv, "/chat", `{"user_id":"u-ext","message":"我的 ORDER-001 到哪了"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d，body: %s", w.Code, w.Body.String())
+	}
+
+	var resp ChatResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp.Answer == "" {
+		t.Error("answer 不应为空")
+	}
+	if resp.Ticket == nil {
+		t.Fatal("启用提取器后 ticket 不应为 nil")
+	}
+	if resp.Ticket.Category != "物流" {
+		t.Errorf("期望 category=物流，得到 %q", resp.Ticket.Category)
+	}
+	if resp.Ticket.Priority != 3 {
+		t.Errorf("期望 priority=3，得到 %d", resp.Ticket.Priority)
+	}
+	if resp.Ticket.Emotion != "焦急" {
+		t.Errorf("期望 emotion=焦急，得到 %q", resp.Ticket.Emotion)
+	}
+}
+
+func TestHandleChat_WithoutTicketExtractor_NoTicket(t *testing.T) {
+	ag := &mockAgent{answer: "ok"}
+	srv := newTestServer(ag, &mockIndexer{}, nil)
+
+	w := postJSON(srv, "/chat", `{"user_id":"u-no-ext","message":"你好"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if _, exists := resp["ticket"]; exists {
+		t.Error("未配置提取器时不应有 ticket 字段")
+	}
+}
+
+func TestHandleChat_ExtractorFails_StillReturnsAnswer(t *testing.T) {
+	ag := &mockAgent{answer: "正常回答"}
+	extClient := &mockExtractorClient{err: errors.New("LLM 不可用")}
+	te := NewTicketExtractor(extClient)
+
+	srv := newTestServer(ag, &mockIndexer{}, nil, WithTicketExtractor(te))
+
+	w := postJSON(srv, "/chat", `{"user_id":"u-fail","message":"你好"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("提取失败不应影响主响应，期望 200，得到 %d", w.Code)
+	}
+
+	var resp ChatResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp.Answer != "正常回答" {
+		t.Errorf("期望 answer=正常回答，得到 %q", resp.Answer)
+	}
+	if resp.Ticket != nil {
+		t.Error("提取失败时 ticket 应为 nil")
+	}
+}
+
 func TestTransferTool_InjectsUserIDFromContext(t *testing.T) {
 	store := NewTicketStore()
 	tool := NewTransferTool(store)

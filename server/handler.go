@@ -89,8 +89,9 @@ type ChatRequest struct {
 
 // ChatResponse 是 POST /chat 的响应体。
 type ChatResponse struct {
-	UserID string `json:"user_id"`
-	Answer string `json:"answer"`
+	UserID string           `json:"user_id"`
+	Answer string           `json:"answer"`
+	Ticket *ExtractedTicket `json:"ticket,omitempty"`
 }
 
 // HistoryMessage 是对话历史中的单条消息（给前端用的精简格式）。
@@ -148,10 +149,16 @@ func (s *Server) processChat(c *gin.Context, req ChatRequest) {
 
 	applyHistoryToSession(sess, history, initialLen)
 
-	c.JSON(http.StatusOK, ChatResponse{
+	resp := ChatResponse{
 		UserID: userID,
 		Answer: answer,
-	})
+	}
+
+	if s.ticketExtractor != nil {
+		resp.Ticket = s.ticketExtractor.Extract(ctx, sess.Messages())
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // handleChatStream 流式对话接口，通过 SSE 逐 token 推送 LLM 回答。

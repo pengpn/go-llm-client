@@ -273,6 +273,26 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
+### ✅ Lesson 13：Structured Output（结构化输出）
+**已完成内容：**
+- `structured/extractor.go` — `Extractor[T]` 泛型提取器：Schema → ToolDefinition → LLM → JSON 解码 → 校验 → 自动重试
+- `structured/extractor_test.go` — 8 个单元测试全部通过
+- `examples/structured_output/main.go` — Demo：从客服对话中提取工单（类别/优先级/情绪/摘要）
+
+**核心设计思想：**
+- Function Calling 作为结构化输出：把 Schema 包装为 ToolDefinition，LLM 被迫按 Schema 填参数
+- 泛型 `Extractor[T]`：目标类型在编译期确定，JSON 解码后直接得到类型安全的结构体
+- `Validator` 接口自动触发：实现即校验（枚举值、数值范围），不实现即跳过
+- 校验失败自动重试：错误信息作为 tool result 回传 → LLM 看到哪里错了 → 修正输出
+- 不修改原始 messages：copy 后操作，避免副作用
+
+**课后作业（已完成）：**
+- ✅ 作业1（温度对比）：`compare/main.go` 实验脚本，同一对话各跑 3 轮，统计 category/priority/emotion 一致率
+- ✅ 作业2（SentimentReport）：`structured/sentiment.go`——5 字段（sentiment/confidence/key_emotions/trigger/recommendation）+ `Validate()` + `SentimentSchema()`；4 个新测试；Demo 增加情绪分析输出
+- ✅ 作业3（Server 集成）：`server/extract.go` TicketExtractor + `WithTicketExtractor` ServerOption + `ChatResponse.Ticket`（`omitempty`）；提取失败不影响主流程（仅 slog.Warn）；3 个新测试
+
+---
+
 ## 技术栈
 - **语言**：Go（主）+ Python（原型验证）
 - **LLM**：OpenAI API / 智谱 GLM / 通义千问 / 本地 Ollama
