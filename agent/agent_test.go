@@ -42,7 +42,10 @@ func (m *mockClient) ChatWithTools(_ context.Context, messages []models.Message,
 	}
 
 	resp := m.responses[m.idx]
-	err := m.errors[m.idx]
+	var err error
+	if m.idx < len(m.errors) {
+		err = m.errors[m.idx]
+	}
 	m.idx++
 	return resp, err
 }

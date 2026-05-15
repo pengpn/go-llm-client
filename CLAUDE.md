@@ -252,25 +252,25 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
-### 📋 Lesson 12：多 Agent 协作
-**目标：**
-- 理解多 Agent 架构适用场景：工具数量 > 15 / 业务域边界清晰 / 需要并行子任务
-- 实现 Router Agent（意图识别 + 分发）→ Sub-Agent（专项处理）
-- 理解 Agent 间上下文传递，以及直接调用 vs 消息队列两种通信模式
+### ✅ Lesson 12：多 Agent 协作
+**已完成内容：**
+- `agent/router.go` — Router Agent：意图识别（LLM JSON 分类）+ 分发到 Sub-Agent
+- `agent/router_test.go` — 10 个测试（parseIntent 4 + buildRouterPrompt 1 + Router.Route 集成 5）
+- `examples/multi_agent/main.go` — 完整多 Agent 客服 Demo（Order/Logistics/Refund/FAQ 四路由）
 
-**计划架构：**
-```
-用户问题 → Router Agent（意图识别）
-    ├── "查订单" → Order Agent
-    ├── "看物流" → Logistics Agent
-    ├── "退款问题" → Refund Agent
-    └── "其他"   → FAQ Agent
-```
+**核心设计思想：**
+- 分治：每个 Sub-Agent 只拿自己领域的工具（2-3个），避免工具过多导致 LLM 选错
+- `SubAgentFactory` 工厂函数：每次路由创建干净实例，避免跨请求状态污染
+- Router 只做意图分类（轻量 LLM 调用），Sub-Agent 做实际工作（可能多轮工具调用）
+- `parseIntent` 兼容 markdown 包裹和前导文本（与 eval/judge.go 同策略）
+- `findFactory` 大小写不敏感匹配，容忍 LLM 输出格式差异
+- `WithFallback` 兜底 Agent：无法匹配意图时降级到 FAQ（纯 LLM 回答）
+- `RunOption` 透传：Router 把 `WithUser`/`WithGate` 等选项原样传给 Sub-Agent
 
-**预计作业：**
-- 作业1：Router Agent，能识别"订单/物流/退款/其他"四类意图
-- 作业2：Order Sub-Agent 和 FAQ Sub-Agent
-- 作业3：测试跨 Agent 的上下文传递（Router 把 user_id 传给 Sub-Agent）
+**课后作业（待完成）：**
+- 作业1：用 curl 或交互式 Demo 测试四类意图的路由准确性
+- 作业2：给 Router 增加 "confidence" 字段（0-1），低于 0.5 时自动走 fallback
+- 作业3：实现并行分发（用户同时问"查订单 ORDER-001 和物流"，Router 拆成两个子任务并发执行）
 
 ---
 

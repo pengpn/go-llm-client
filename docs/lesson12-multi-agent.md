@@ -50,6 +50,6 @@ Router → 发消息到队列 → Sub-Agent 消费 → 结果回写
 ```
 
 ### 课后作业（预计）
-- 作业1：实现 Router Agent，能识别"订单/物流/退款/其他"四类意图
-- 作业2：实现 Order Sub-Agent 和 FAQ Sub-Agent
-- 作业3：测试跨 Agent 的上下文传递（Router 把用户 ID 传给 Sub-Agent）
+-作业1（入门）： 运行 Demo 测试路由准确性，试试"订单查询"、"快递到哪了"、"我要退款"、"你好"分别路由到哪个 Agent
+-作业2（中等）： 给 Router 的 Intent 增加 Confidence float64 字段，LLM 输出置信度，低于 0.5 时自动走 fallback
+-作业3（挑战）： 实现并行分发——当用户同时问"查 ORDER-001 状态和物流"时，Router 拆成两个子任务并发给 Order Agent 和 Logistics Agent，合并结果返回
