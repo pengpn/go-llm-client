@@ -293,6 +293,30 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 
 ---
 
+### ✅ Lesson 14：Memory & Conversation Summary（长期记忆）
+**已完成内容：**
+- `session/summary.go` — `Summarizer` 对话摘要压缩器：Sliding Window + LLM 自动总结
+- `session/memory.go` — `UserMemory` 用户画像记忆（key-value + TTL 过期）+ `FileMemoryStore` 文件持久化
+- `session/summary_test.go` — 8 个单元测试全部通过
+- `session/memory_test.go` — 14 个单元测试全部通过
+- `examples/memory_demo/main.go` — 完整 Demo：回头客识别 + 对话摘要压缩
+
+**核心设计思想：**
+- Sliding Window + Summary：旧消息不硬截断，而是 LLM 压缩为摘要，关键信息被保留
+- `SummaryLLM` 最小接口：只需要 `Chat()`，不需要 `ChatWithTools()`，接口隔离原则
+- Summarizer 独立于 TruncateStrategy：摘要需要异步 LLM 调用且是有损操作，不适合同步接口
+- UserMemory key-value 设计：精确覆盖更新、按需检索、精细过期控制
+- `FormatForPrompt()` 注入 System Prompt：LLM 最"信任"的信息源
+- `FileMemoryStore` 原子写入：与 Session.Save 同策略（tmp + rename）
+- 文件不存在返回空记忆（不报错）：新用户首次访问的优雅处理
+
+**课后作业（待完成）：**
+- 作业1：`SummaryStrategy` 截断策略——包装 Summarizer，有缓存则使用摘要，无缓存退化为 ByTurns
+- 作业2：客服系统集成 UserMemory——自动加载画像注入 prompt，提供 GET/PUT /memory 接口
+- 作业3：`MemoryExtractor` LLM 自动提取画像——复用 `structured.Extractor[T]`，按置信度过滤
+
+---
+
 ## 技术栈
 - **语言**：Go（主）+ Python（原型验证）
 - **LLM**：OpenAI API / 智谱 GLM / 通义千问 / 本地 Ollama
