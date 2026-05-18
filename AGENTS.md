@@ -286,10 +286,34 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - 校验失败自动重试：错误信息作为 tool result 回传 → LLM 看到哪里错了 → 修正输出
 - 不修改原始 messages：copy 后操作，避免副作用
 
-**课后作业（待完成）：**
-- 作业1：运行 Demo，对比 temperature=0.1 和 temperature=0.8 的提取稳定性
-- 作业2：新增一个 `SentimentReport` 类型（情绪分析报告），复用 `Extractor[T]`
-- 作业3：将 `Extractor` 集成到客服系统——每次对话结束后自动提取工单
+**课后作业（已完成）：**
+- ✅ 作业1（温度对比）：`compare/main.go` 实验脚本，同一对话各跑 3 轮，统计 category/priority/emotion 一致率
+- ✅ 作业2（SentimentReport）：`structured/sentiment.go`——5 字段（sentiment/confidence/key_emotions/trigger/recommendation）+ `Validate()` + `SentimentSchema()`；4 个新测试；Demo 增加情绪分析输出
+- ✅ 作业3（Server 集成）：`server/extract.go` TicketExtractor + `WithTicketExtractor` ServerOption + `ChatResponse.Ticket`（`omitempty`）；提取失败不影响主流程（仅 slog.Warn）；3 个新测试
+
+---
+
+### ✅ Lesson 14：Memory & Conversation Summary（长期记忆）
+**已完成内容：**
+- `session/summary.go` — `Summarizer` 对话摘要压缩器：Sliding Window + LLM 自动总结
+- `session/memory.go` — `UserMemory` 用户画像记忆（key-value + TTL 过期）+ `FileMemoryStore` 文件持久化
+- `session/summary_test.go` — 8 个单元测试全部通过
+- `session/memory_test.go` — 14 个单元测试全部通过
+- `examples/memory_demo/main.go` — 完整 Demo：回头客识别 + 对话摘要压缩
+
+**核心设计思想：**
+- Sliding Window + Summary：旧消息不硬截断，而是 LLM 压缩为摘要，关键信息被保留
+- `SummaryLLM` 最小接口：只需要 `Chat()`，不需要 `ChatWithTools()`，接口隔离原则
+- Summarizer 独立于 TruncateStrategy：摘要需要异步 LLM 调用且是有损操作，不适合同步接口
+- UserMemory key-value 设计：精确覆盖更新、按需检索、精细过期控制
+- `FormatForPrompt()` 注入 System Prompt：LLM 最"信任"的信息源
+- `FileMemoryStore` 原子写入：与 Session.Save 同策略（tmp + rename）
+- 文件不存在返回空记忆（不报错）：新用户首次访问的优雅处理
+
+**课后作业（已完成）：**
+- ✅ 作业1：`SummaryStrategy` 截断策略——两阶段模式（`PrepareSummary` 异步生成 + `Truncate` 同步使用缓存），有缓存用摘要，无缓存退化为 `ByTurns`，使用后自动清除缓存；6个测试
+- ✅ 作业2：客服系统集成 UserMemory——`WithMemoryStore` ServerOption + `injectUserMemory` 自动加载画像注入 System Prompt + `GET/PUT /memory/:user_id` 接口 + Session 新增 `UpdateSystemPrompt`/`SystemPrompt` 方法 + Manager 新增 `SystemPrompt` 方法；6个测试
+- ✅ 作业3：`MemoryExtractor` LLM 自动提取画像——`server/memory_extract.go`，复用 `structured.Extractor[ExtractedMemories]`，`WithConfidenceThreshold` 按置信度过滤（默认 0.7），`ExtractAndSave` 一步完成提取+持久化，集成到 `processChat` 非阻塞执行；14个测试
 
 ---
 
@@ -304,11 +328,6 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - 并发：共享状态必须加锁，优先用 channel 传递数据
 - 配置：函数式选项模式（`WithXxx`）
 - 注释：中文注释，说明"为什么"而不只是"是什么"
-
-## 课后作业
-- 作业1（入门）： 运行 Demo，对比 temperature=0.1 和 0.8 的提取稳定性差异
-- 作业2（中等）： 新增一个 SentimentReport 类型（含 overall_sentiment、key_phrases []string、escalation_needed bool），复用 Extractor[T] 提取
-- 作业3（挑战）： 将 Extractor 集成到客服 server——POST /chat 回答后自动提取工单字段，附在响应 JSON 中返回
 
 ## 仓库地址
 https://github.com/pengpn/go-llm-agent

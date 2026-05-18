@@ -2,7 +2,9 @@ package server
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -132,6 +134,10 @@ func (s *Server) processChat(c *gin.Context, req ChatRequest) {
 	}
 
 	sess := s.sessions.GetOrCreate(userID)
+
+	// 加载用户画像并注入 System Prompt（每次请求都刷新，确保画像更新生效）
+	s.injectUserMemory(userID, sess)
+
 	sess.AddUserMessage(req.Message)
 
 	msgs := sess.Messages()
@@ -156,6 +162,11 @@ func (s *Server) processChat(c *gin.Context, req ChatRequest) {
 
 	if s.ticketExtractor != nil {
 		resp.Ticket = s.ticketExtractor.Extract(ctx, sess.Messages())
+	}
+
+	// 自动提取用户画像（Lesson 14）：提取失败不影响响应
+	if s.memoryExtractor != nil && s.memoryStore != nil {
+		s.memoryExtractor.ExtractAndSave(ctx, sess.Messages(), userID, s.memoryStore)
 	}
 
 	c.JSON(http.StatusOK, resp)
@@ -341,6 +352,124 @@ func (s *Server) handleListTickets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"tickets": tickets,
 		"count":   len(tickets),
+	})
+}
+
+// injectUserMemory 加载用户画像并注入 Session 的 System Prompt。
+// 每次请求都重新拼接（base + 当前画像），确保 PUT /memory 更新后立即生效。
+// memoryStore 为 nil 时直接返回（功能未启用）。
+func (s *Server) injectUserMemory(userID string, sess *session.Session) {
+	if s.memoryStore == nil {
+		return
+	}
+
+	memory, err := s.memoryStore.Load(userID)
+	if err != nil {
+		slog.Warn("加载用户画像失败", "user_id", userID, "err", err)
+		return
+	}
+
+	profile := memory.FormatForPrompt()
+	if profile == "" {
+		return
+	}
+
+	basePrompt := s.sessions.SystemPrompt()
+	enhanced := basePrompt + "\n\n" + profile
+	sess.UpdateSystemPrompt(enhanced)
+}
+
+// MemoryUpdateRequest 是 PUT /memory/:user_id 的请求体
+type MemoryUpdateRequest struct {
+	Key   string `json:"key" binding:"required"`
+	Value string `json:"value" binding:"required"`
+	TTL   int    `json:"ttl_seconds"` // 过期时间（秒），0 表示永不过期
+}
+
+// handleGetMemory 返回用户的画像记忆列表
+func (s *Server) handleGetMemory(c *gin.Context) {
+	userID := c.Param("user_id")
+
+	if len(s.jwtSecret) > 0 {
+		callerID := c.GetString("user_id")
+		if callerID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权查看其他用户的画像"})
+			return
+		}
+	}
+
+	memory, err := s.memoryStore.Load(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载画像失败: " + err.Error()})
+		return
+	}
+
+	entries := memory.All()
+	items := make([]gin.H, len(entries))
+	for i, e := range entries {
+		item := gin.H{
+			"key":        e.Key,
+			"value":      e.Value,
+			"created_at": e.CreatedAt,
+			"updated_at": e.UpdatedAt,
+		}
+		if !e.ExpiresAt.IsZero() {
+			item["expires_at"] = e.ExpiresAt
+		}
+		items[i] = item
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id": userID,
+		"entries": items,
+		"count":   len(items),
+	})
+}
+
+// handleUpdateMemory 手动更新用户画像中的一条记忆
+func (s *Server) handleUpdateMemory(c *gin.Context) {
+	userID := c.Param("user_id")
+
+	if len(s.jwtSecret) > 0 {
+		callerID := c.GetString("user_id")
+		if callerID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权修改其他用户的画像"})
+			return
+		}
+	}
+
+	var req MemoryUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误: " + err.Error()})
+		return
+	}
+
+	// 防止注入：key 和 value 不应包含控制字符
+	req.Key = strings.TrimSpace(req.Key)
+	req.Value = strings.TrimSpace(req.Value)
+
+	memory, err := s.memoryStore.Load(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载画像失败: " + err.Error()})
+		return
+	}
+
+	var ttl time.Duration
+	if req.TTL > 0 {
+		ttl = time.Duration(req.TTL) * time.Second
+	}
+	memory.Set(req.Key, req.Value, ttl)
+
+	if err := s.memoryStore.Save(memory); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存画像失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"user_id": userID,
+		"key":     req.Key,
+		"value":   req.Value,
 	})
 }
 

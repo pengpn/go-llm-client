@@ -848,6 +848,141 @@ func TestHandleChat_ExtractorFails_StillReturnsAnswer(t *testing.T) {
 	}
 }
 
+// ── Lesson 14 作业2：用户画像记忆集成测试 ──────────────────────────────────
+
+// putJSON 发送 PUT JSON 请求
+func putJSON(srv *Server, path, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func TestHandleGetMemory_EmptyMemory(t *testing.T) {
+	store := session.NewFileMemoryStore(t.TempDir())
+	srv := newTestServer(&mockAgent{answer: "ok"}, &mockIndexer{}, nil, WithMemoryStore(store))
+
+	w := getRequest(srv, "/memory/new-user")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d，body: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["user_id"] != "new-user" {
+		t.Errorf("期望 user_id=new-user，得到 %v", resp["user_id"])
+	}
+	if int(resp["count"].(float64)) != 0 {
+		t.Errorf("新用户画像应为空，count=%v", resp["count"])
+	}
+}
+
+func TestHandleUpdateMemory_Success(t *testing.T) {
+	store := session.NewFileMemoryStore(t.TempDir())
+	srv := newTestServer(&mockAgent{answer: "ok"}, &mockIndexer{}, nil, WithMemoryStore(store))
+
+	// 写入一条记忆
+	w := putJSON(srv, "/memory/u-mem", `{"key":"常用地址","value":"北京市朝阳区"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d，body: %s", w.Code, w.Body.String())
+	}
+
+	// 读取验证
+	w2 := getRequest(srv, "/memory/u-mem")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", w2.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w2.Body).Decode(&resp)
+
+	if int(resp["count"].(float64)) != 1 {
+		t.Fatalf("期望 count=1，得到 %v", resp["count"])
+	}
+	entries := resp["entries"].([]any)
+	entry := entries[0].(map[string]any)
+	if entry["key"] != "常用地址" {
+		t.Errorf("期望 key=常用地址，得到 %v", entry["key"])
+	}
+	if entry["value"] != "北京市朝阳区" {
+		t.Errorf("期望 value=北京市朝阳区，得到 %v", entry["value"])
+	}
+}
+
+func TestHandleUpdateMemory_MissingFields(t *testing.T) {
+	store := session.NewFileMemoryStore(t.TempDir())
+	srv := newTestServer(&mockAgent{answer: "ok"}, &mockIndexer{}, nil, WithMemoryStore(store))
+
+	w := putJSON(srv, "/memory/u-mem", `{"key":"only_key"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("缺少 value 期望 400，得到 %d", w.Code)
+	}
+}
+
+func TestHandleChat_InjectsMemoryIntoPrompt(t *testing.T) {
+	dir := t.TempDir()
+	store := session.NewFileMemoryStore(dir)
+
+	// 预先写入用户画像
+	mem := session.NewUserMemory("u-profile")
+	mem.Set("VIP等级", "金牌会员", 0)
+	mem.Set("常购商品", "手机", 0)
+	if err := store.Save(mem); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{answer: "好的金牌会员"}
+	srv := newTestServer(ag, &mockIndexer{}, nil, WithMemoryStore(store))
+
+	// 发送聊天请求
+	w := postJSON(srv, "/chat", `{"user_id":"u-profile","message":"你好"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d，body: %s", w.Code, w.Body.String())
+	}
+
+	// 验证 Session 的 system prompt 包含用户画像
+	sess := srv.sessions.Get("u-profile")
+	if sess == nil {
+		t.Fatal("session should exist after chat")
+	}
+	prompt := sess.SystemPrompt()
+	if !strings.Contains(prompt, "[用户画像]") {
+		t.Errorf("system prompt should contain [用户画像], got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "VIP等级") {
+		t.Errorf("system prompt should contain VIP等级, got: %s", prompt)
+	}
+}
+
+func TestHandleChat_NoMemoryStore_NoInjection(t *testing.T) {
+	ag := &mockAgent{answer: "ok"}
+	srv := newTestServer(ag, &mockIndexer{}, nil) // 不配置 memoryStore
+
+	w := postJSON(srv, "/chat", `{"user_id":"u-no-mem","message":"你好"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", w.Code)
+	}
+
+	// 未配置 memoryStore 时，system prompt 不应包含画像
+	sess := srv.sessions.Get("u-no-mem")
+	prompt := sess.SystemPrompt()
+	if strings.Contains(prompt, "[用户画像]") {
+		t.Error("未配置 memoryStore 时不应有用户画像注入")
+	}
+}
+
+func TestMemoryRoutes_NotRegistered_WithoutStore(t *testing.T) {
+	srv := newTestServer(&mockAgent{answer: "ok"}, &mockIndexer{}, nil)
+
+	w := getRequest(srv, "/memory/u-test")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("未配置 memoryStore 时 /memory 应 404，得到 %d", w.Code)
+	}
+}
+
 func TestTransferTool_InjectsUserIDFromContext(t *testing.T) {
 	store := NewTicketStore()
 	tool := NewTransferTool(store)

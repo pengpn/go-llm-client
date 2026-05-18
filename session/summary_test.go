@@ -183,6 +183,186 @@ func TestFormatConversation(t *testing.T) {
 	}
 }
 
+// ---- SummaryStrategy 测试 ----
+
+func TestSummaryStrategy_Truncate_WithCache(t *testing.T) {
+	llm := &mockSummaryLLM{response: "摘要：用户咨询了订单问题"}
+	strategy := NewSummaryStrategy(llm,
+		WithSummaryThreshold(8),
+		WithSummaryKeepRecent(4),
+		WithFallbackTurns(5),
+	)
+
+	sess := buildSession("你是客服", 12)
+
+	// 阶段1：预生成摘要
+	prepared, err := strategy.PrepareSummary(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !prepared {
+		t.Fatal("should have prepared a summary")
+	}
+	if !strategy.HasCachedSummary() {
+		t.Fatal("cache should have summary after PrepareSummary")
+	}
+
+	// 阶段2：Truncate 使用缓存摘要
+	msgs := strategy.Truncate(sess.messages)
+
+	// 1 system + 1 摘要 + 4 最近 = 6
+	if len(msgs) != 6 {
+		t.Fatalf("expected 6 messages, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[1].Content, "[对话摘要]") {
+		t.Fatalf("second message should be summary, got %q", msgs[1].Content)
+	}
+
+	// 使用后缓存应被清除
+	if strategy.HasCachedSummary() {
+		t.Fatal("cache should be cleared after Truncate")
+	}
+}
+
+func TestSummaryStrategy_Truncate_WithoutCache_FallsBackToByTurns(t *testing.T) {
+	llm := &mockSummaryLLM{response: "摘要"}
+	strategy := NewSummaryStrategy(llm,
+		WithSummaryThreshold(8),
+		WithFallbackTurns(3),
+	)
+
+	sess := buildSession("你是客服", 12)
+
+	// 不调用 PrepareSummary，直接 Truncate → 应该退化为 ByTurns(3)
+	msgs := strategy.Truncate(sess.messages)
+
+	// ByTurns{MaxTurns: 3} → 1 system + 6 history = 7
+	if len(msgs) != 7 {
+		t.Fatalf("expected 7 messages (fallback ByTurns=3), got %d", len(msgs))
+	}
+
+	// 不应该有摘要消息
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "[对话摘要]") {
+			t.Fatal("should not contain summary when no cache")
+		}
+	}
+}
+
+func TestSummaryStrategy_PrepareSummary_BelowThreshold(t *testing.T) {
+	llm := &mockSummaryLLM{response: "摘要"}
+	strategy := NewSummaryStrategy(llm, WithSummaryThreshold(20))
+
+	sess := buildSession("你是客服", 6)
+
+	prepared, err := strategy.PrepareSummary(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if prepared {
+		t.Fatal("should not prepare below threshold")
+	}
+	if llm.called != 0 {
+		t.Fatal("LLM should not be called")
+	}
+}
+
+func TestSummaryStrategy_PrepareSummary_LLMError(t *testing.T) {
+	llm := &mockSummaryLLM{err: errors.New("LLM 超时")}
+	strategy := NewSummaryStrategy(llm, WithSummaryThreshold(5))
+
+	sess := buildSession("你是客服", 10)
+
+	_, err := strategy.PrepareSummary(context.Background(), sess)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "预生成摘要失败") {
+		t.Fatalf("error should mention 预生成, got: %v", err)
+	}
+
+	// 失败后无缓存，Truncate 应退化
+	if strategy.HasCachedSummary() {
+		t.Fatal("cache should be empty after failed prepare")
+	}
+}
+
+func TestSummaryStrategy_IntegrationWithSession(t *testing.T) {
+	llm := &mockSummaryLLM{response: "用户张先生咨询了 ORDER-123 的退款进度"}
+	strategy := NewSummaryStrategy(llm,
+		WithSummaryThreshold(8),
+		WithSummaryKeepRecent(4),
+		WithFallbackTurns(5),
+	)
+
+	// 用 SummaryStrategy 作为 Session 的截断策略
+	sess := NewSession("user-001", "你是客服助手", strategy)
+	for i := range 12 {
+		if i%2 == 0 {
+			sess.AddUserMessage(fmt.Sprintf("用户消息 %d", i/2+1))
+		} else {
+			sess.AddAssistantMessage(fmt.Sprintf("客服回复 %d", (i+1)/2))
+		}
+	}
+
+	// 预生成摘要
+	prepared, err := strategy.PrepareSummary(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !prepared {
+		t.Fatal("should have prepared")
+	}
+
+	// session.Messages() 内部会调用 strategy.Truncate()
+	msgs := sess.Messages()
+
+	// 1 system + 1 摘要 + 4 最近 = 6
+	if len(msgs) != 6 {
+		t.Fatalf("expected 6 messages from session.Messages(), got %d", len(msgs))
+	}
+	if msgs[0].Content != "你是客服助手" {
+		t.Fatalf("first should be system prompt, got %q", msgs[0].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "ORDER-123") {
+		t.Fatalf("summary should contain ORDER-123, got %q", msgs[1].Content)
+	}
+}
+
+func TestSummaryStrategy_CacheUsedOnce(t *testing.T) {
+	llm := &mockSummaryLLM{response: "第一次摘要"}
+	strategy := NewSummaryStrategy(llm,
+		WithSummaryThreshold(5),
+		WithSummaryKeepRecent(2),
+		WithFallbackTurns(3),
+	)
+
+	sess := buildSession("你是客服", 8)
+
+	// 预生成摘要
+	strategy.PrepareSummary(context.Background(), sess)
+
+	// 第一次 Truncate 使用摘要
+	msgs1 := strategy.Truncate(sess.messages)
+	hasSummary := false
+	for _, m := range msgs1 {
+		if strings.Contains(m.Content, "[对话摘要]") {
+			hasSummary = true
+		}
+	}
+	if !hasSummary {
+		t.Fatal("first Truncate should use summary")
+	}
+
+	// 第二次 Truncate（缓存已清除）应退化为 ByTurns
+	msgs2 := strategy.Truncate(sess.messages)
+	for _, m := range msgs2 {
+		if strings.Contains(m.Content, "[对话摘要]") {
+			t.Fatal("second Truncate should NOT use summary (cache cleared)")
+		}
+	}
+}
+
 func TestSummarizer_NoSystemPrompt(t *testing.T) {
 	llm := &mockSummaryLLM{response: "用户咨询了一些问题"}
 	sm := NewSummarizer(llm, WithThreshold(5), WithKeepRecent(2))

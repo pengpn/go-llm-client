@@ -134,6 +134,31 @@ func (s *Session) History() []models.Message {
 	return result
 }
 
+// UpdateSystemPrompt 更新 System Prompt（同时更新第一条 system 消息）。
+// 用于在会话创建后注入用户画像等动态上下文。
+//
+// 为什么不在创建时注入？
+// → Manager.GetOrCreate 使用固定的 systemPrompt，无法按用户定制。
+// → 用户画像需要从外部存储加载后才能拼接，时机晚于 Session 创建。
+func (s *Session) UpdateSystemPrompt(prompt string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.systemPrompt = prompt
+	if len(s.messages) > 0 && s.messages[0].Role == models.RoleSystem {
+		s.messages[0].Content = prompt
+	} else if prompt != "" {
+		s.messages = append([]models.Message{{Role: models.RoleSystem, Content: prompt}}, s.messages...)
+	}
+}
+
+// SystemPrompt 返回当前的 System Prompt。
+func (s *Session) SystemPrompt() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.systemPrompt
+}
+
 // Clear 清除对话历史，保留 system prompt。
 // 场景：用户主动开始新话题，或管理员重置会话。
 func (s *Session) Clear() {

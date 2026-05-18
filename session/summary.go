@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/pengpn/go-llm-agent/models"
 )
@@ -147,6 +148,198 @@ func (sm *Summarizer) summarize(ctx context.Context, messages []models.Message) 
 	}
 
 	return summary, nil
+}
+
+// SummaryStrategy 是实现 TruncateStrategy 接口的摘要截断策略。
+//
+// 核心矛盾：TruncateStrategy.Truncate() 是同步方法，不能调用 LLM。
+// 解决方案：两阶段模式（Prepare + Apply）。
+//
+//	阶段 1（异步）：调用方在对话前执行 PrepareSummary(ctx, session)，LLM 生成摘要并缓存
+//	阶段 2（同步）：session.Messages() 内部调用 Truncate()，检查缓存：
+//	    - 有缓存 → 用摘要替换旧消息
+//	    - 无缓存 → 退化为 ByTurns 截断
+//
+// 使用示例：
+//
+//	strategy := session.NewSummaryStrategy(llm, session.WithSummaryThreshold(20))
+//	sess := session.NewSession("id", "prompt", strategy)
+//	// 每次对话前预生成摘要
+//	strategy.PrepareSummary(ctx, sess)
+//	// session.Messages() 内部自动使用摘要
+//	msgs := sess.Messages()
+type SummaryStrategy struct {
+	summarizer *Summarizer
+	fallback   *ByTurns
+	cache      *summaryCache
+}
+
+// summaryCache 存储预生成的摘要，按 session ID 隔离
+type summaryCache struct {
+	mu      sync.RWMutex
+	entries map[string]string // sessionID → 摘要文本
+}
+
+func newSummaryCache() *summaryCache {
+	return &summaryCache{entries: make(map[string]string)}
+}
+
+func (c *summaryCache) get(sessionID string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	s, ok := c.entries[sessionID]
+	return s, ok
+}
+
+func (c *summaryCache) set(sessionID, summary string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[sessionID] = summary
+}
+
+func (c *summaryCache) delete(sessionID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, sessionID)
+}
+
+// SummaryStrategyOption 函数式选项
+type SummaryStrategyOption func(*summaryStrategyConfig)
+
+type summaryStrategyConfig struct {
+	threshold    int
+	keepRecent   int
+	fallbackTurns int
+}
+
+// WithSummaryThreshold 设置触发摘要的消息数阈值（默认 20）
+func WithSummaryThreshold(n int) SummaryStrategyOption {
+	return func(c *summaryStrategyConfig) { c.threshold = n }
+}
+
+// WithSummaryKeepRecent 设置保留最近消息数（默认 6）
+func WithSummaryKeepRecent(n int) SummaryStrategyOption {
+	return func(c *summaryStrategyConfig) { c.keepRecent = n }
+}
+
+// WithFallbackTurns 设置无缓存时退化的 ByTurns 轮数（默认 10）
+func WithFallbackTurns(n int) SummaryStrategyOption {
+	return func(c *summaryStrategyConfig) { c.fallbackTurns = n }
+}
+
+// NewSummaryStrategy 创建摘要截断策略
+func NewSummaryStrategy(llm SummaryLLM, opts ...SummaryStrategyOption) *SummaryStrategy {
+	cfg := &summaryStrategyConfig{
+		threshold:    20,
+		keepRecent:   6,
+		fallbackTurns: 10,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	return &SummaryStrategy{
+		summarizer: NewSummarizer(llm,
+			WithThreshold(cfg.threshold),
+			WithKeepRecent(cfg.keepRecent),
+		),
+		fallback: &ByTurns{MaxTurns: cfg.fallbackTurns},
+		cache:    newSummaryCache(),
+	}
+}
+
+// PrepareSummary 预生成对话摘要并缓存（异步阶段）。
+// 调用方应在每次发送消息给 LLM 之前调用此方法。
+// 返回 true 表示生成了新摘要，false 表示无需生成。
+func (ss *SummaryStrategy) PrepareSummary(ctx context.Context, sess *Session) (bool, error) {
+	sess.mu.RLock()
+	msgCount := len(sess.messages)
+	sessionID := sess.id
+	msgsCopy := make([]models.Message, len(sess.messages))
+	copy(msgsCopy, sess.messages)
+	sess.mu.RUnlock()
+
+	if msgCount < ss.summarizer.threshold {
+		return false, nil
+	}
+
+	_, historyMsgs := splitSystem(msgsCopy)
+	if len(historyMsgs) <= ss.summarizer.keepRecent {
+		return false, nil
+	}
+
+	toSummarize := historyMsgs[:len(historyMsgs)-ss.summarizer.keepRecent]
+
+	summary, err := ss.summarizer.summarize(ctx, toSummarize)
+	if err != nil {
+		return false, fmt.Errorf("预生成摘要失败: %w", err)
+	}
+
+	ss.cache.set(sessionID, summary)
+	return true, nil
+}
+
+// Truncate 实现 TruncateStrategy 接口。
+// 有缓存摘要时使用摘要替换旧消息；无缓存时退化为 ByTurns。
+func (ss *SummaryStrategy) Truncate(messages []models.Message) []models.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	// 尝试从消息中识别 session ID（通过查找是否有匹配的缓存）
+	// 由于 Truncate 接口不传 sessionID，我们检查所有缓存条目
+	// 实际场景中一个 SummaryStrategy 通常只服务一个 Session
+	summary, found := ss.findCachedSummary()
+	if !found {
+		return ss.fallback.Truncate(messages)
+	}
+
+	systemMsgs, historyMsgs := splitSystem(messages)
+
+	keepRecent := ss.summarizer.keepRecent
+	if len(historyMsgs) <= keepRecent {
+		return messages
+	}
+
+	recentMsgs := historyMsgs[len(historyMsgs)-keepRecent:]
+	summaryMsg := models.Message{
+		Role:    models.RoleSystem,
+		Content: fmt.Sprintf("[对话摘要] %s", summary),
+	}
+
+	result := make([]models.Message, 0, len(systemMsgs)+1+len(recentMsgs))
+	result = append(result, systemMsgs...)
+	result = append(result, summaryMsg)
+	result = append(result, recentMsgs...)
+
+	// 使用后清除缓存，避免过时摘要被重复使用
+	ss.clearCache()
+
+	return result
+}
+
+// findCachedSummary 查找任意可用的缓存摘要
+func (ss *SummaryStrategy) findCachedSummary() (string, bool) {
+	ss.cache.mu.RLock()
+	defer ss.cache.mu.RUnlock()
+
+	for _, summary := range ss.cache.entries {
+		return summary, true
+	}
+	return "", false
+}
+
+// clearCache 清除所有缓存
+func (ss *SummaryStrategy) clearCache() {
+	ss.cache.mu.Lock()
+	defer ss.cache.mu.Unlock()
+	ss.cache.entries = make(map[string]string)
+}
+
+// HasCachedSummary 检查是否有可用的缓存摘要（用于测试和调试）
+func (ss *SummaryStrategy) HasCachedSummary() bool {
+	_, found := ss.findCachedSummary()
+	return found
 }
 
 // formatConversation 将消息列表格式化为可读文本

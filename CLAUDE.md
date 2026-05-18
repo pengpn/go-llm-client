@@ -310,10 +310,10 @@ Go 后端工程师，正在系统学习 AI Agent 开发，目标是构建对话�
 - `FileMemoryStore` 原子写入：与 Session.Save 同策略（tmp + rename）
 - 文件不存在返回空记忆（不报错）：新用户首次访问的优雅处理
 
-**课后作业（待完成）：**
-- 作业1：`SummaryStrategy` 截断策略——包装 Summarizer，有缓存则使用摘要，无缓存退化为 ByTurns
-- 作业2：客服系统集成 UserMemory——自动加载画像注入 prompt，提供 GET/PUT /memory 接口
-- 作业3：`MemoryExtractor` LLM 自动提取画像——复用 `structured.Extractor[T]`，按置信度过滤
+**课后作业（已完成）：**
+- ✅ 作业1：`SummaryStrategy` 截断策略——两阶段模式（`PrepareSummary` 异步生成 + `Truncate` 同步使用缓存），有缓存用摘要，无缓存退化为 `ByTurns`，使用后自动清除缓存；6个测试
+- ✅ 作业2：客服系统集成 UserMemory——`WithMemoryStore` ServerOption + `injectUserMemory` 自动加载画像注入 System Prompt + `GET/PUT /memory/:user_id` 接口 + Session 新增 `UpdateSystemPrompt`/`SystemPrompt` 方法 + Manager 新增 `SystemPrompt` 方法；6个测试
+- ✅ 作业3：`MemoryExtractor` LLM 自动提取画像——`server/memory_extract.go`，复用 `structured.Extractor[ExtractedMemories]`，`WithConfidenceThreshold` 按置信度过滤（默认 0.7），`ExtractAndSave` 一步完成提取+持久化，集成到 `processChat` 非阻塞执行；14个测试
 
 ---
 

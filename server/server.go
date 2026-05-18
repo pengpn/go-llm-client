@@ -52,8 +52,10 @@ type Server struct {
 	limiter   *RateLimiter      // nil 表示不限流
 	jwtSecret       []byte            // nil 表示不启用 JWT 认证
 	apiKeys         map[string]string // API Key → UserID 映射
-	tickets         *TicketStore      // nil 表示未启用人工转接工单
-	ticketExtractor *TicketExtractor  // nil 表示不自动提取工单
+	tickets          *TicketStore              // nil 表示未启用人工转接工单
+	ticketExtractor  *TicketExtractor          // nil 表示不自动提取工单
+	memoryStore      session.MemoryStore       // nil 表示不启用用户画像
+	memoryExtractor  *MemoryExtractor          // nil 表示不自动提取画像
 }
 
 // ServerOption 用于配置 Server 实例（函数式选项模式）。
@@ -90,6 +92,24 @@ func WithTicketStore(store *TicketStore) ServerOption {
 func WithTicketExtractor(te *TicketExtractor) ServerOption {
 	return func(s *Server) {
 		s.ticketExtractor = te
+	}
+}
+
+// WithMemoryExtractor 启用 LLM 自动提取用户画像功能。
+// 需同时配置 WithMemoryStore，否则提取结果无处保存。
+// 每次 /chat 回答后自动从对话中提取值得记忆的用户信息。
+func WithMemoryExtractor(me *MemoryExtractor) ServerOption {
+	return func(s *Server) {
+		s.memoryExtractor = me
+	}
+}
+
+// WithMemoryStore 启用用户画像记忆功能。
+// 每次 /chat 请求时自动加载用户画像并注入 System Prompt。
+// 同时注册 GET/PUT /memory/:user_id 路由。
+func WithMemoryStore(store session.MemoryStore) ServerOption {
+	return func(s *Server) {
+		s.memoryStore = store
 	}
 }
 
@@ -147,6 +167,10 @@ func (s *Server) setupRoutes() {
 	protected.GET("/history/:user_id", s.handleHistory)
 	if s.tickets != nil {
 		protected.GET("/tickets", s.handleListTickets)
+	}
+	if s.memoryStore != nil {
+		protected.GET("/memory/:user_id", s.handleGetMemory)
+		protected.PUT("/memory/:user_id", s.handleUpdateMemory)
 	}
 }
 

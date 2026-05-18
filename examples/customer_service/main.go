@@ -127,8 +127,18 @@ func main() {
 	// ── 自动工单提取（Lesson 13）：每次 /chat 回答后自动从对话中提取工单信息 ──
 	ticketExtractor := server.NewTicketExtractor(llmClient)
 
+	// ── 用户画像记忆（Lesson 14）：跨会话记住用户偏好，自动注入 System Prompt ──
+	memoryStore := session.NewFileMemoryStore("./data/memories")
+	memoryExtractor := server.NewMemoryExtractor(llmClient)
+	slog.Info("用户画像记忆已启用", "dir", "./data/memories")
+
 	srv := server.New(ag, sessions, pipeline, faqDocs,
-		append(opts, server.WithTicketStore(ticketStore), server.WithTicketExtractor(ticketExtractor))...)
+		append(opts,
+			server.WithTicketStore(ticketStore),
+			server.WithTicketExtractor(ticketExtractor),
+			server.WithMemoryStore(memoryStore),
+			server.WithMemoryExtractor(memoryExtractor),
+		)...)
 	if err := srv.Run(":8080"); err != nil {
 		slog.Error("server exited", "err", err)
 		os.Exit(1)

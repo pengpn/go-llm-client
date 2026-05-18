@@ -141,6 +141,11 @@ func (m *Manager) cleanup() {
 	})
 }
 
+// SystemPrompt 返回 Manager 创建新 Session 时使用的基础 System Prompt。
+func (m *Manager) SystemPrompt() string {
+	return m.systemPrompt
+}
+
 // Stats 返回管理器状态摘要。
 func (m *Manager) Stats() string {
 	return fmt.Sprintf("活跃 Session 数: %d | TTL: %v", m.Count(), m.ttl)
